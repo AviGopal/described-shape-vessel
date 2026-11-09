@@ -20,27 +20,27 @@ type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
 
-const call = async (url: string, payload: object): Promise<Response> => {
+const call = async (url: string, payload: object): Promise<Answer> => {
   const init = {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `${AUTH_SCHEME} ${KEY}` },
     body: JSON.stringify(payload),
     timeout: false,
   }
-  return fetch(url, init)
+  const r = await fetch(url, init)
+  if (!r.ok) {
+    return { ok: false, status: r.status, body: null, text: await r.text() }
+  }
+  return { ok: true, status: r.status, body: (await r.json()) as unknown, text: "" }
 }
 
 export const records = async (shape: string, pointer: object): Promise<Answer> => {
   const d = await call(new URL(RESOLVE, DISCOVERY_URL).href, { pointer: { type: VESSEL_CAPABILITY, shape } })
   if (!d.ok) {
-    return { ok: false, status: d.status, body: null, text: await d.text() }
+    return d
   }
-  const [e] = ((await d.json()) as { content: { vessels: Entry[] } }).content.vessels
-  const r = await call(new URL(e.resolve_endpoint, e.endpoint).href, { impulse: { pointer: { ...pointer, type: shape } } })
-  if (!r.ok) {
-    return { ok: false, status: r.status, body: null, text: await r.text() }
-  }
-  return { ok: true, status: r.status, body: (await r.json()) as unknown, text: "" }
+  const [e] = (d.body as { content: { vessels: Entry[] } }).content.vessels
+  return call(new URL(e.resolve_endpoint, e.endpoint).href, { impulse: { pointer: { ...pointer, type: shape } } })
 }
 
 const make = async (p: Ask, callerKey: string): Promise<Response> => {
@@ -65,9 +65,9 @@ const make = async (p: Ask, callerKey: string): Promise<Response> => {
     const url = new URL(c.resolve_endpoint, c.endpoint).href
     const r = await call(url, { impulse: { pointer } })
     if (!r.ok) {
-      return fail(r.status, await r.text())
+      return fail(r.status, r.text)
     }
-    const result = (await r.json()) as Record<string, unknown>
+    const result = r.body as Record<string, unknown>
     text = String(result[c.output_field])
     last = { url, result, field: c.producer_field }
   }
@@ -75,7 +75,7 @@ const make = async (p: Ask, callerKey: string): Promise<Response> => {
   try {
     body = JSON.parse(text) as Record<string, unknown>
   } catch (e) {
-    return fail(422, String(e))
+    return Response.json({ failure: { status: 422, body: String(e) } }, { status: 422 })
   }
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
@@ -106,6 +106,6 @@ export const produce = async (req: Request): Promise<Response> => {
     const p = ((await req.json()) as { impulse: { pointer: Ask } }).impulse.pointer
     return await make(p, who.keyId)
   } catch (e) {
-    return fail(500, String(e))
+    return Response.json({ failure: { status: 500, body: String(e) } }, { status: 500 })
   }
 }

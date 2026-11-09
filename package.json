@@ -1,0 +1,12 @@
+{
+  "name": "described-shape-vessel",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ajv": "8.17.1"
+  },
+  "devDependencies": {
+    "bun-types": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

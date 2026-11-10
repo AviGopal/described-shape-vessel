@@ -53,7 +53,15 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const wanted = new Set([schema.inputs, schema.context ?? []].flat().map(String))
   const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
-  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used })
+  const looked: unknown[] = []
+  for (const pointer of [schema.reads ?? []].flat() as object[]) {
+    const r = await resolve(pointer)
+    if (!r.ok) {
+      return fail(r.status, r.text)
+    }
+    looked.push(r.body)
+  }
+  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used, reads: looked })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })

@@ -21,6 +21,7 @@ const INPUTS = [
 ]
 
 let llmContent = JSON.stringify({ text: "hi" })
+let readsDown = false
 let discovery: Fake
 let identity: Fake
 let port: number
@@ -30,6 +31,9 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA])
   if (p.type === "record_read" && p.shape === "channel") return Response.json([CHANNEL])
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
+  if (p.type === "shapeDescriptions") return readsDown
+    ? Response.json({ error: "down" }, { status: 503 })
+    : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" } } })
   if (p.type === "llm_completion") return Response.json({ content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -113,6 +117,26 @@ describe("described-shape vessel", () => {
     expect(llm.pointer.prompt).not.toContain("a draft answer")
     const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
     expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
+  })
+
+  test("reads the schema names are resolved by shape and shown to the producer", async () => {
+    ;(SCHEMA as any).reads = [{ type: "shapeDescriptions" }]
+    const before = discovery.seen.length
+    const ok = await produce(NODE_KEY)
+    const calls = discovery.seen.slice(before)
+    readsDown = true
+    const down = await produce(NODE_KEY)
+    const downCalls = discovery.seen.slice(before + calls.length)
+    readsDown = false
+    delete (SCHEMA as any).reads
+    expect(ok.status).toBe(200)
+    expect(calls.some((c) => c.path === "/resolve" && (c.body as any).pointer.type === "shapeDescriptions")).toBe(true)
+    const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    expect(llm.pointer.prompt).toContain("produces file content from a path")
+    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
+    expect(down.status).toBe(503)
+    expect(downCalls.some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
   })
 
   test("a schema row with no inputs list is refused, not read as empty", async () => {

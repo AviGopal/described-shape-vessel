@@ -47,6 +47,15 @@ export const healthy = async (port: number): Promise<Response> => {
   throw new Error(`no /health on ${port}`)
 }
 
+// Waits for something the vessel does after /health answers (it registers once it serves).
+export const until = async (ok: () => boolean, what: string): Promise<void> => {
+  for (let i = 0; i < 200; i++) {
+    if (ok()) return
+    await Bun.sleep(25)
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
+
 // A missing boot value exits 1 and names the variable, never a value.
 export const exitsNaming = async (entry: string, env: Record<string, string>) => {
   const p = run(entry, env)

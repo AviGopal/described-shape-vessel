@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { type Fake, exitsNaming, fake, freePort, healthy, run } from "./harness"
+import { type Fake, exitsNaming, fake, freePort, healthy, run, until } from "./harness"
 
 const NODE_KEY = "node-key-for-test"
 const PERSON_KEY = "person-key-for-test"
@@ -58,6 +58,7 @@ beforeAll(async () => {
     DESCRIBED_ENDPOINT: `http://127.0.0.1:${port}`, IDENTITY_VESSEL_URL: identity.url, METABOB_API_KEY: NODE_KEY,
   })
   await healthy(port)
+  await until(() => discovery.seen.some((s) => s.path === "/register"), "/register")
 })
 
 afterAll(() => {

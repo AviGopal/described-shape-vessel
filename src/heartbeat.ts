@@ -4,6 +4,8 @@ import { AUTH_SCHEME, HEARTBEAT, REGISTER } from "./routes"
 
 type Answer = { nextHeartbeatMs: number }
 
+const NO_LIMIT_MS = 2147483647
+
 const post = async (path: string, payload: object): Promise<Answer> => {
   const init = {
     method: "POST",
@@ -19,7 +21,7 @@ const post = async (path: string, payload: object): Promise<Answer> => {
 }
 
 export const register = async (shapes: string[]): Promise<void> => {
-  await post(REGISTER, { vesselId: VESSEL_ID, endpoint: ENDPOINT, shapes })
+  await post(REGISTER, { vesselId: VESSEL_ID, endpoint: ENDPOINT, shapes, resolve_timeout_ms: NO_LIMIT_MS })
 }
 
 export const beat = async (): Promise<void> => {

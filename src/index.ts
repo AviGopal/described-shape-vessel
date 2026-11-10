@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-import { PORT } from "./config"
+import { PORT, VESSEL_ID } from "./config"
 import { beat, register } from "./heartbeat"
 import { fail, produce, records } from "./produce"
-import { SERVE } from "./routes"
+import { HEALTH, SERVE } from "./routes"
 import { RECORD_READ, SHAPE_SCHEMA } from "./shapes"
 
 const schemas = await records(RECORD_READ, { shape: SHAPE_SCHEMA })
@@ -15,7 +15,7 @@ const targets = [...new Set((schemas.body as Array<{ target: string }>).map((r) 
 Bun.serve({
   port: PORT,
   idleTimeout: 0,
-  routes: { [SERVE]: { POST: produce } },
+  routes: { [SERVE]: { POST: produce }, [HEALTH]: { GET: () => Response.json({ vessel: VESSEL_ID }) } },
   fetch: () => fail(404, ""),
   error: (e) => {
     console.error(String(e))

@@ -6,13 +6,18 @@ const NODE_KEY = "node-key-for-test"
 const PERSON_KEY = "person-key-for-test"
 
 const SCHEMA = {
-  shape: "shape_schema", id: "s1", target: "answer", description: "the answer",
+  shape: "shape_schema", id: "s1", target: "answer", description: "the answer", inputs: ["world_changed"],
   schema: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
 }
 const CHANNEL = {
   shape: "channel", id: "ch1",
   calls: [{ pointer: { type: "llm_completion", model: "model-asked" }, input_field: "prompt", output_field: "content", producer_field: "model" }],
 }
+
+const INPUTS = [
+  { shape: "world_changed", id: "w1", what: "the question" },
+  { shape: "hop", id: "h1", output: { text: "a draft answer from an earlier attempt" } },
+]
 
 let llmContent = JSON.stringify({ text: "hi" })
 let discovery: Fake
@@ -23,7 +28,7 @@ let vessel: ReturnType<typeof run>
 const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA])
   if (p.type === "record_read" && p.shape === "channel") return Response.json([CHANNEL])
-  if (p.type === "record_read") return Response.json([])
+  if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "llm_completion") return Response.json({ content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -33,7 +38,7 @@ const produce = async (key: string) => {
   const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `ApiKey ${key}` },
-    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1"], selection_ref: "sel-1", call_id: "call-1" } } }),
+    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1"], selection_ref: "sel-1", call_id: "call-1" } } }),
   })
   return { status: r.status, body: (await r.json()) as any }
 }
@@ -94,6 +99,17 @@ describe("described-shape vessel", () => {
     expect(w.pointer.row).toMatchObject({ text: "hi", shape: "answer", selection_ref: "sel-1", call_id: "call-1", producer: "model-served" })
     expect(w.pointer.row.caller_key).toBeUndefined()
     expect(JSON.stringify(calls)).not.toContain("endpoint")
+  })
+
+  test("the LLM sees only the inputs the schema names, and the row records exactly those", async () => {
+    const before = discovery.seen.length
+    expect((await produce(NODE_KEY)).status).toBe(200)
+    const calls = discovery.seen.slice(before)
+    const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    expect(llm.pointer.prompt).toContain("the question")
+    expect(llm.pointer.prompt).not.toContain("a draft answer")
+    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    expect(w.pointer.row.input_refs).toEqual(["w1"])
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {

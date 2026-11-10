@@ -48,7 +48,9 @@ const make = async (p: Ask): Promise<Response> => {
   if (!ins.ok) {
     return fail(ins.status, ins.text)
   }
-  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: ins.body })
+  const wanted = new Set(schema.inputs as string[])
+  const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
+  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })
@@ -72,7 +74,7 @@ const make = async (p: Ask): Promise<Response> => {
   const row = {
     ...body,
     shape: p.shape,
-    input_refs: p.input_refs,
+    input_refs: used.map((r) => r.id),
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),

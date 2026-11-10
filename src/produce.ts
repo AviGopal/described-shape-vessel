@@ -48,7 +48,10 @@ const make = async (p: Ask): Promise<Response> => {
   if (!ins.ok) {
     return fail(ins.status, ins.text)
   }
-  const wanted = new Set(schema.inputs as string[])
+  if (!Array.isArray(schema.inputs)) {
+    return fail(422, SHAPE_SCHEMA)
+  }
+  const wanted = new Set([schema.inputs, schema.context ?? []].flat().map(String))
   const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
   let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used })
   let last = { result: {} as Record<string, unknown>, field: "" }

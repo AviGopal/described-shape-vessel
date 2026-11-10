@@ -6,7 +6,7 @@ const NODE_KEY = "node-key-for-test"
 const PERSON_KEY = "person-key-for-test"
 
 const SCHEMA = {
-  shape: "shape_schema", id: "s1", target: "answer", description: "the answer", inputs: ["world_changed"],
+  shape: "shape_schema", id: "s1", target: "answer", description: "the answer", inputs: ["world_changed"], context: ["hop"],
   schema: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
 }
 const CHANNEL = {
@@ -16,7 +16,8 @@ const CHANNEL = {
 
 const INPUTS = [
   { shape: "world_changed", id: "w1", what: "the question" },
-  { shape: "hop", id: "h1", output: { text: "a draft answer from an earlier attempt" } },
+  { shape: "hop", id: "h1", output: { text: "data a request fetched" } },
+  { shape: "failure", id: "f1", body: "a draft answer from an earlier attempt" },
 ]
 
 let llmContent = JSON.stringify({ text: "hi" })
@@ -38,7 +39,7 @@ const produce = async (key: string) => {
   const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `ApiKey ${key}` },
-    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1"], selection_ref: "sel-1", call_id: "call-1" } } }),
+    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1", "f1"], selection_ref: "sel-1", call_id: "call-1" } } }),
   })
   return { status: r.status, body: (await r.json()) as any }
 }
@@ -102,15 +103,26 @@ describe("described-shape vessel", () => {
     expect(JSON.stringify(calls)).not.toContain("endpoint")
   })
 
-  test("the LLM sees only the inputs the schema names, and the row records exactly those", async () => {
+  test("the LLM sees only the inputs and context the schema names, and the row records exactly those", async () => {
     const before = discovery.seen.length
     expect((await produce(NODE_KEY)).status).toBe(200)
     const calls = discovery.seen.slice(before)
     const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
     expect(llm.pointer.prompt).toContain("the question")
+    expect(llm.pointer.prompt).toContain("data a request fetched")
     expect(llm.pointer.prompt).not.toContain("a draft answer")
     const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
-    expect(w.pointer.row.input_refs).toEqual(["w1"])
+    expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
+  })
+
+  test("a schema row with no inputs list is refused, not read as empty", async () => {
+    const keep = (SCHEMA as any).inputs
+    delete (SCHEMA as any).inputs
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY)
+    ;(SCHEMA as any).inputs = keep
+    expect(r.status).toBe(422)
+    expect(discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {

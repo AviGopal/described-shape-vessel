@@ -157,6 +157,24 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ text: "hi" })
   })
 
+  test("a schema's numeric bounds are enforced: a due of within_ms 0 is refused", async () => {
+    const keep = { schema: (SCHEMA as any).schema }
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["within_ms"], properties: { within_ms: { type: "number", minimum: 60000, maximum: 1800000 } },
+    }
+    llmContent = JSON.stringify({ within_ms: 0 })
+    const tooSoon = await produce(NODE_KEY)
+    llmContent = JSON.stringify({ within_ms: 1800001 })
+    const tooLate = await produce(NODE_KEY)
+    llmContent = JSON.stringify({ within_ms: 60000 })
+    const inside = await produce(NODE_KEY)
+    ;(SCHEMA as any).schema = keep.schema
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(tooSoon.status).toBe(422)
+    expect(tooLate.status).toBe(422)
+    expect(inside.status).toBe(200)
+  })
+
   test("a key that is not the node's own gets 403, even when identity accepts it", async () => {
     const before = discovery.seen.length
     expect((await produce(PERSON_KEY)).status).toBe(403)

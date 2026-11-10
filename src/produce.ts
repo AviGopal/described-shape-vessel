@@ -89,6 +89,9 @@ export const produce = async (req: Request): Promise<Response> => {
   if (!who.ok) {
     return fail(401, "")
   }
+  if (!who.self) {
+    return fail(403, "")
+  }
   try {
     const p = ((await req.json()) as { impulse: { pointer: Ask } }).impulse.pointer
     return await make(p)

@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
 import { check } from "./check"
-import { DISCOVERY_URL, KEY } from "./config"
+import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
-import { CHANNEL, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA, VESSEL_CAPABILITY } from "./shapes"
+import { CHANNEL, DESCRIBED, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA } from "./shapes"
 
-type Entry = { endpoint: string; resolve_endpoint: string }
 type Row = { id: string; [k: string]: unknown }
 type ChannelCall = {
-  endpoint: string
-  resolve_endpoint: string
   pointer: Record<string, unknown>
   input_field: string
   output_field: string
@@ -20,30 +17,23 @@ type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
 
-const call = async (url: string, payload: object): Promise<Answer> => {
+const resolve = async (pointer: object): Promise<Answer> => {
   const init = {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `${AUTH_SCHEME} ${KEY}` },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ pointer }),
     timeout: false,
   }
-  const r = await fetch(url, init)
+  const r = await fetch(new URL(RESOLVE, DISCOVERY_URL).href, init)
   if (!r.ok) {
     return { ok: false, status: r.status, body: null, text: await r.text() }
   }
   return { ok: true, status: r.status, body: (await r.json()) as unknown, text: "" }
 }
 
-export const records = async (shape: string, pointer: object): Promise<Answer> => {
-  const d = await call(new URL(RESOLVE, DISCOVERY_URL).href, { pointer: { type: VESSEL_CAPABILITY, shape } })
-  if (!d.ok) {
-    return d
-  }
-  const [e] = (d.body as { content: { vessels: Entry[] } }).content.vessels
-  return call(new URL(e.resolve_endpoint, e.endpoint).href, { impulse: { pointer: { ...pointer, type: shape } } })
-}
+export const records = async (shape: string, pointer: object): Promise<Answer> => resolve({ ...pointer, type: shape })
 
-const make = async (p: Ask, callerKey: string): Promise<Response> => {
+const make = async (p: Ask): Promise<Response> => {
   const sch = await records(RECORD_READ, { shape: SHAPE_SCHEMA, where: { target: p.shape } })
   if (!sch.ok) {
     return fail(sch.status, sch.text)
@@ -59,17 +49,15 @@ const make = async (p: Ask, callerKey: string): Promise<Response> => {
     return fail(ins.status, ins.text)
   }
   let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: ins.body })
-  let last = { url: "", result: {} as Record<string, unknown>, field: "" }
+  let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
-    const pointer = { ...c.pointer, [c.input_field]: text }
-    const url = new URL(c.resolve_endpoint, c.endpoint).href
-    const r = await call(url, { impulse: { pointer } })
+    const r = await resolve({ ...c.pointer, [c.input_field]: text })
     if (!r.ok) {
       return fail(r.status, r.text)
     }
     const result = r.body as Record<string, unknown>
     text = String(result[c.output_field])
-    last = { url, result, field: c.producer_field }
+    last = { result, field: c.producer_field }
   }
   let body: Record<string, unknown>
   try {
@@ -87,10 +75,9 @@ const make = async (p: Ask, callerKey: string): Promise<Response> => {
     input_refs: p.input_refs,
     selection_ref: p.selection_ref,
     call_id: p.call_id,
-    caller_key: callerKey,
-    producer: [last.url, String(last.result[last.field])].join(" "),
+    producer: String(last.result[last.field]),
   }
-  const w = await records(RECORD_WRITE, { row })
+  const w = await records(RECORD_WRITE, { row, writer: VESSEL_ID, role: DESCRIBED })
   if (!w.ok) {
     return fail(w.status, w.text)
   }
@@ -104,7 +91,7 @@ export const produce = async (req: Request): Promise<Response> => {
   }
   try {
     const p = ((await req.json()) as { impulse: { pointer: Ask } }).impulse.pointer
-    return await make(p, who.keyId)
+    return await make(p)
   } catch (e) {
     return Response.json({ failure: { status: 500, body: String(e) } }, { status: 500 })
   }

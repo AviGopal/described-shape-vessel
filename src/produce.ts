@@ -17,6 +17,18 @@ type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
 
+// A model often wraps its JSON in a fenced code block, with or without prose around it. Parse the body of the first
+// fenced block when there is one, otherwise the text as it is. Nothing else is repaired.
+const FENCE = /```[^\n`]*\n?([\s\S]*?)```/
+
+const unfenced = (text: string): string => {
+  const m = FENCE.exec(text)
+  if (m === null) {
+    return text
+  }
+  return m[1]
+}
+
 const resolve = async (pointer: object): Promise<Answer> => {
   const init = {
     method: "POST",
@@ -74,7 +86,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   let body: Record<string, unknown>
   try {
-    body = JSON.parse(text) as Record<string, unknown>
+    body = JSON.parse(unfenced(text)) as Record<string, unknown>
   } catch (e) {
     return Response.json({ failure: { status: 422, body: String(e) } }, { status: 422 })
   }

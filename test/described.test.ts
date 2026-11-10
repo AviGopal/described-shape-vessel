@@ -149,6 +149,29 @@ describe("described-shape vessel", () => {
     expect(discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
   })
 
+  test("JSON is read bare, from a fenced block, or from a fenced block with prose around it", async () => {
+    const forms = [
+      JSON.stringify({ text: "hi" }),
+      "```json\n" + JSON.stringify({ text: "hi" }) + "\n```",
+      "```\n" + JSON.stringify({ text: "hi" }) + "\n```",
+      "Here it is:\n```json\n" + JSON.stringify({ text: "hi" }) + "\n```\nDone.",
+    ]
+    const statuses: number[] = []
+    for (const form of forms) {
+      llmContent = form
+      statuses.push((await produce(NODE_KEY)).status)
+    }
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(statuses).toEqual([200, 200, 200, 200])
+  })
+
+  test("a fenced block that is not JSON is still refused", async () => {
+    llmContent = "```json\nnot json\n```"
+    const r = await produce(NODE_KEY)
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(r.status).toBe(422)
+  })
+
   test("an answer that is not the schema's JSON is refused with 422", async () => {
     llmContent = "not json"
     expect((await produce(NODE_KEY)).status).toBe(422)

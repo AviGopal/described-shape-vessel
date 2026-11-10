@@ -15,6 +15,7 @@ const post = async (path: string, payload: object): Promise<Answer> => {
   }
   const r = await fetch(new URL(path, DISCOVERY_URL).href, init)
   if (!r.ok) {
+    console.error(`${path} answered ${r.status}: ${await r.text()}`)
     process.exit(1)
   }
   return (await r.json()) as Answer

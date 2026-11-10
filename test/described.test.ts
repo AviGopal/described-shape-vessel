@@ -165,6 +165,16 @@ describe("described-shape vessel", () => {
     expect(statuses).toEqual([200, 200, 200, 200])
   })
 
+  test("two fenced blocks are ambiguous: refused, nothing written", async () => {
+    llmContent = "Example:\n```json\n" + JSON.stringify({ text: "example" }) + "\n```\nAnswer:\n```json\n" + JSON.stringify({ text: "real" }) + "\n```"
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY)
+    const wrote = discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "record_write")
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(r.status).toBe(422)
+    expect(wrote).toBe(false)
+  })
+
   test("a fenced block that is not JSON is still refused", async () => {
     llmContent = "```json\nnot json\n```"
     const r = await produce(NODE_KEY)

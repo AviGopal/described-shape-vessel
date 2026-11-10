@@ -17,16 +17,17 @@ type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
 
-// A model often wraps its JSON in a fenced code block, with or without prose around it. Parse the body of the first
-// fenced block when there is one, otherwise the text as it is. Nothing else is repaired.
-const FENCE = /```[^\n`]*\n?([\s\S]*?)```/
+// A model often wraps its JSON in a fenced code block, with or without prose around it. When the text holds exactly
+// one fenced block, parse its body; otherwise (none, or several, which is ambiguous) parse the text as it is, so
+// several blocks fail rather than one being guessed. Nothing else is repaired.
+const FENCE = /```[^\n`]*\n?([\s\S]*?)```/g
 
 const unfenced = (text: string): string => {
-  const m = FENCE.exec(text)
-  if (m === null) {
+  const blocks = [...text.matchAll(FENCE)]
+  if (blocks.length !== 1) {
     return text
   }
-  return m[1]
+  return blocks[0][1]
 }
 
 const resolve = async (pointer: object): Promise<Answer> => {

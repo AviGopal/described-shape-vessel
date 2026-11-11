@@ -15,7 +15,8 @@ type ChannelCall = {
 type Ask = { shape: string; via_ref: string; input_refs: string[]; selection_ref: string; call_id: string }
 type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
-const INPUT_ROW_MAX = 64 * 1024
+// Room for a gitDiff capped at 64 KiB of text where it is made, once JSON-escaped and with its fields.
+const INPUT_ROW_MAX = 96 * 1024
 const CONTEXT_ROW_MAX = 8 * 1024
 const clip = (r: Row, max: number): Row => {
   const whole = JSON.stringify(r)
@@ -92,10 +93,15 @@ const make = async (p: Ask): Promise<Response> => {
     looked.push(r.body)
     answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
   }
-  // Each row is shown whole up to a size, then cut and marked as cut, so one oversized row (a tool's whole stdout
-  // recorded in a hop) cannot push every prompt that reads it past the model's input ceiling. A row the schema takes as
-  // an input gets more room than one it shows only as context. The row still counts as used: its id is in input_refs.
-  const shown = used.map((r) => clip(r, inputs.has(String(r.shape)) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX))
+  // A row the schema shows only as context is cut past a size and marked as cut, so one oversized row (a tool's whole
+  // stdout recorded in a hop) cannot push every prompt that reads it past the model's input ceiling; it still counts as
+  // used. A row the schema takes as an INPUT is what the answer is about, and a cut one could be judged as if it were
+  // whole (a grader shown part of a diff), so an input past the size is refused, by name, rather than cut.
+  const tooBig = used.filter((r) => inputs.has(String(r.shape)) && JSON.stringify(r).length > INPUT_ROW_MAX)
+  if (tooBig.length > 0) {
+    return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(r).length} bytes)`).join(", ")}`)
+  }
+  const shown = used.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
   let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: shown, reads: looked })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {

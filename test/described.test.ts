@@ -253,6 +253,20 @@ describe("described-shape vessel", () => {
     expect(w.pointer.row.input_refs).toContain("h-big") // still counted as used
   })
 
+  test("[MUST-FAIL] an input row too big to show whole is refused by name, never cut", async () => {
+    const huge = { shape: "world_changed", id: "w-huge", what: "y".repeat(200_000) }
+    INPUTS.push(huge)
+    const before = discovery.seen.length
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w-huge"], selection_ref: "s", call_id: "c" } } }),
+    })
+    INPUTS.pop()
+    expect(r.status).toBe(422)
+    expect(((await r.json()) as any).failure.body).toContain("w-huge")
+    expect(discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
+  })
+
   test("[MUST-FAIL] a call naming no channel is refused by name, not a 500", async () => {
     const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },

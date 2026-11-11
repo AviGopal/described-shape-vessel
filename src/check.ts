@@ -28,6 +28,32 @@ export const shapeIn = (schema: unknown, body: unknown, reads: Array<{ type: str
   return bad
 }
 
+// A schema property may say its value must be the id of a row the producer was shown ("x-shown": true): an answer that
+// cites a row it was never given is refused, by name, rather than written with a reference no reader can resolve.
+export const shownIn = (schema: unknown, body: unknown, ids: Set<string>, at = ""): string[] => {
+  if (typeof schema !== "object" || schema === null) return []
+  const s = schema as { "x-shown"?: boolean; properties?: Record<string, unknown>; items?: unknown }
+  const bad: string[] = []
+  if (s["x-shown"] === true && typeof body === "string" && !ids.has(body)) bad.push(`${at || "/"} ${JSON.stringify(body)} is not a row it was shown`)
+  if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
+    for (const [k, sub] of Object.entries(s.properties)) {
+      if (k in body) bad.push(...shownIn(sub, (body as Record<string, unknown>)[k], ids, `${at}/${k}`))
+    }
+  }
+  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...shownIn(s.items, v, ids, `${at}/${i}`)))
+  return bad
+}
+
+// Whether a row is one an inputs or context entry names: a shape, or {shape, where} with each where field equal to the
+// row's (a list: any of its values).
+export const matches = (r: Record<string, unknown>, e: unknown): boolean => {
+  if (typeof e === "string") return String(r.shape) === e
+  if (typeof e !== "object" || e === null) return false
+  const { shape, where } = e as { shape?: unknown; where?: Record<string, unknown> }
+  return String(r.shape) === String(shape) &&
+    Object.entries(where ?? {}).every(([k, v]) => Array.isArray(v) ? v.includes(r[k]) : r[k] === v)
+}
+
 export const check = (schema: object, body: unknown): { ok: boolean; errors: string } => {
   const validate = ajv.compile(schema)
   const valid = validate(body)

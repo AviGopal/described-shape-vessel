@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, shapeIn } from "./check"
+import { check, matches, shapeIn, shownIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA } from "./shapes"
@@ -89,8 +89,21 @@ const make = async (p: Ask): Promise<Response> => {
   if (!Array.isArray(schema.inputs)) {
     return fail(422, SHAPE_SCHEMA)
   }
-  const wanted = new Set([schema.inputs, schema.context ?? []].flat().map(String))
-  const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
+  // An entry of inputs or context is a shape, or {shape, where, join}: rows of that shape whose fields hold where's
+  // values (a list: any of them). The owner says which rows of a shape the producer is shown, so a grader can be given
+  // what a tool call returned without the walk's own steps. join {on, take} copies the fields take names onto a shown
+  // row from another row of its shape with the same value at on (an ended hop names no shape called; its started hop
+  // does); that other row is neither shown nor cited.
+  const wanted = [schema.inputs, schema.context ?? []].flat()
+  const all = ins.body as Row[]
+  const used = all.flatMap((r) => {
+    const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
+    if (e === undefined) return []
+    const on = String(e.join?.on ?? "")
+    const take = [e.join?.take ?? []].flat().map(String).filter((k) => r[k] === undefined)
+    const from = on && take.length > 0 ? all.find((x) => x !== r && x.shape === r.shape && x[on] !== undefined && x[on] === r[on]) : undefined
+    return [from === undefined ? r : { ...r, ...Object.fromEntries(take.filter((k) => from[k] !== undefined).map((k) => [k, from[k]])) }]
+  })
   const inputs = new Set((schema.inputs as unknown[]).map(String))
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
@@ -125,6 +138,10 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
   const omitted = used.length - seen.length
+  // Rows a read answered with are shown too, so the row cites them beside its inputs: a grade judging a deadline a read
+  // returned names a row it was given.
+  const read = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string") : [])
+  const cited = [...new Set([...seen, ...read].map((r) => r.id))]
   const shown = seen.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
   let text = JSON.stringify({
     description: schema.description, schema: schema.schema, inputs: shown, reads: looked,
@@ -162,10 +179,15 @@ const make = async (p: Ask): Promise<Response> => {
   if (outside.length > 0) {
     return refusedBySchema(outside.join("; ").slice(0, 1000))
   }
+  // And a value it says names a row the producer was shown must be one of those rows.
+  const unseen = shownIn(schema.schema, body, new Set(cited))
+  if (unseen.length > 0) {
+    return refusedBySchema(unseen.join("; ").slice(0, 1000))
+  }
   const row = {
     ...body,
     shape: p.shape,
-    input_refs: seen.map((r) => r.id),
+    input_refs: cited,
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),

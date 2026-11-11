@@ -20,6 +20,8 @@ const INPUTS = [
   { shape: "failure", id: "f1", body: "a draft answer from an earlier attempt" },
   { shape: "gap", id: "g1", summary: "a check that fails" },
 ]
+// What a record_lapsed read answers: deadline rows, as records returns them
+const LAPSED = [{ shape: "due", id: "d1", role: "described", within_ms: 60000, at: 1, input_refs: ["w1"] }]
 // Schema rows besides SCHEMA (newer ones, as records lists them oldest first)
 let moreSchemas: Array<Record<string, unknown>> = []
 
@@ -40,6 +42,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
     : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" } } })
+  if (p.type === "record_lapsed") return Response.json(LAPSED)
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -252,6 +255,62 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ text: "hi" })
     expect(r.status).toBe(422)
     expect(JSON.stringify(r.body)).toContain("not json at all")
+  })
+
+  test("[MUST-FAIL] a context entry with a where shows only the rows it matches: a tool call's ended hop, not the walk's own steps", async () => {
+    // the walk's hops as written: a started hop names the shape called; the ended hop carries kind and output, no pointer_type
+    const hops = [
+      { shape: "hop", id: "hs1", role: "walk", phase: "started", kind: "call", call_id: "k1", pointer_type: "fs_read", input: { path: "a" } },
+      { shape: "hop", id: "he1", role: "walk", phase: "ended", kind: "call", call_id: "k1", output: { text: "what fs_read returned" } },
+      { shape: "hop", id: "he2", role: "walk", phase: "ended", kind: "run", call_id: "k2", output: { text: "what the template run returned" } },
+      { shape: "hop", id: "he3", role: "walk", phase: "ended", kind: "produce", call_id: "k3", output: { text: "a draft the walk produced" } },
+      { shape: "hop", id: "he4", role: "walk", phase: "ended", kind: "wait-for", call_id: "k4", output: { text: "a wait that ended" } },
+    ]
+    INPUTS.push(...hops)
+    const keep = SCHEMA.context
+    ;(SCHEMA as any).context = [{ shape: "hop", where: { phase: "ended", kind: ["call", "run"] }, join: { on: "call_id", take: ["pointer_type"] } }]
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ["w1", ...hops.map((h) => h.id)] })
+    ;(SCHEMA as any).context = keep
+    INPUTS.splice(INPUTS.length - hops.length, hops.length)
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    expect(r.status).toBe(200)
+    expect(prompt).toContain("what fs_read returned")
+    expect(prompt).toContain("what the template run returned")
+    expect(prompt).not.toContain("a draft the walk produced")
+    expect(prompt).not.toContain("a wait that ended")
+    expect(prompt).not.toContain('"started"')
+    expect(prompt).toContain('"pointer_type":"fs_read"') // the shape called, joined from the started hop by call_id
+    expect(prompt).not.toContain('"path":"a"') // and nothing else of it
+    expect(w.pointer.row.input_refs).toEqual(["w1", "he1", "he2"])
+  })
+
+  test("[MUST-FAIL] rows a read returned are cited as shown, and a value the schema says names a shown row is refused when it names another", async () => {
+    const keep = (SCHEMA as any).schema
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["r", "evidence_refs"],
+      properties: { r: { enum: [0, 1] }, evidence_refs: { type: "array", items: { type: "string", "x-shown": true } } },
+    }
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write")
+    const before = writes().length
+    llmContent = JSON.stringify({ r: 0, evidence_refs: ["d1"] })
+    const judged = await produce(NODE_KEY)
+    const row = writes().at(-1)?.body as any
+    llmContent = JSON.stringify({ r: 0, evidence_refs: ["d-never-shown"] })
+    const other = await produce(NODE_KEY)
+    const after = writes().length
+    ;(SCHEMA as any).schema = keep
+    delete (SCHEMA as any).reads
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(judged.status).toBe(200)
+    expect(row.pointer.row.input_refs).toEqual(["w1", "h1", "d1"])
+    expect(other.status).toBe(422)
+    expect(other.body.failure.refused).toBe("schema")
+    expect(other.body.failure.body).toContain('"d-never-shown"')
+    expect(after - before).toBe(1) // the refused answer wrote nothing
   })
 
   test("[MUST-FAIL] a value the schema says names a served shape is refused when it is not one, and kept when it is", async () => {

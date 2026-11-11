@@ -363,6 +363,41 @@ describe("described-shape vessel", () => {
     expect(stderr).not.toContain(NODE_KEY)
   })
 
+  test("[MUST-FAIL] a schema target the owner writes after boot is served from the next heartbeat, without a restart", async () => {
+    let targets = ["answer"]
+    let readsFail = false
+    const d = fake((path, body) => {
+      if (path === "/heartbeat") return Response.json({ nextHeartbeatMs: 100 })
+      if (path !== "/resolve") return Response.json({ ok: true })
+      const p = (body as any).pointer
+      if (p.type === "record_read" && p.shape === "shape_schema") {
+        return readsFail ? Response.json({ error: "down" }, { status: 503 }) : Response.json(targets.map((t, i) => ({ ...SCHEMA, id: `s${i}`, target: t })))
+      }
+      return Response.json([])
+    })
+    const p2 = freePort()
+    const v = run("src/index.ts", {
+      DESCRIBED_VESSEL_ID: "described-beat", DESCRIBED_PORT: String(p2), DISCOVERY_URL: d.url,
+      DESCRIBED_ENDPOINT: `http://127.0.0.1:${p2}`, IDENTITY_VESSEL_URL: identity.url, METABOB_API_KEY: NODE_KEY,
+    })
+    try {
+      await healthy(p2)
+      const registered = () => d.seen.filter((x) => x.path === "/register").map((x) => (x.body as any).shapes as string[])
+      await until(() => registered().length >= 1, "first /register")
+      expect(registered()[0]).toEqual(["answer"])
+      readsFail = true // a failed read keeps what is registered
+      await Bun.sleep(400)
+      expect(registered()).toHaveLength(1)
+      readsFail = false
+      targets = ["answer", "change_wanted"]
+      await until(() => registered().length >= 2, "a /register with the new target")
+      expect([...registered()[1]].sort()).toEqual(["answer", "change_wanted"])
+    } finally {
+      v.kill()
+      d.stop()
+    }
+  })
+
   test("a missing boot value exits 1 and names it, never its value", async () => {
     const { code, stderr } = await exitsNaming("src/index.ts", {
       DESCRIBED_VESSEL_ID: "described-test", DESCRIBED_PORT: String(freePort()), DISCOVERY_URL: discovery.url,

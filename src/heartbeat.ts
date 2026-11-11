@@ -25,9 +25,17 @@ export const register = async (shapes: string[]): Promise<void> => {
   await post(REGISTER, { vesselId: VESSEL_ID, endpoint: ENDPOINT, shapes, resolve_timeout_ms: NO_LIMIT_MS })
 }
 
-export const beat = async (): Promise<void> => {
+// Between beats the shapes served are read again (targets): a schema the owner writes later is served from the next beat,
+// not from the next restart. A read that fails keeps what is registered.
+export const beat = async (shapes: string[], targets: () => Promise<string[] | null>): Promise<void> => {
+  let served = [...shapes].sort()
   while (true) {
     const a = await post(HEARTBEAT, { vesselId: VESSEL_ID })
     await Bun.sleep(a.nextHeartbeatMs)
+    const now = await targets()
+    if (now !== null && JSON.stringify([...now].sort()) !== JSON.stringify(served)) {
+      await register(now)
+      served = [...now].sort()
+    }
   }
 }

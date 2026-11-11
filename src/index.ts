@@ -31,5 +31,13 @@ Bun.serve({
     process.exit(1)
   },
 })
+// The targets as the owner's schema rows name them now, or null when they cannot be read.
+const readTargets = async (): Promise<string[] | null> => {
+  const r = await records(RECORD_READ, { shape: SHAPE_SCHEMA })
+  const body = r.ok ? (r.body as unknown) : null
+  const list = Array.isArray(body) ? body : (body as { content?: unknown } | null)?.content
+  return Array.isArray(list) ? [...new Set((list as Array<{ target: string }>).map((x) => String(x.target)))] : null
+}
+
 await register(targets)
-await beat()
+await beat(targets, readTargets)

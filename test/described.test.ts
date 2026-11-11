@@ -18,7 +18,10 @@ const INPUTS = [
   { shape: "world_changed", id: "w1", what: "the question" },
   { shape: "hop", id: "h1", output: { text: "data a request fetched" } },
   { shape: "failure", id: "f1", body: "a draft answer from an earlier attempt" },
+  { shape: "gap", id: "g1", summary: "a check that fails" },
 ]
+// Schema rows besides SCHEMA (newer ones, as records lists them oldest first)
+let moreSchemas: Array<Record<string, unknown>> = []
 
 let llmContent = JSON.stringify({ text: "hi" })
 let llmFailure: Record<string, unknown> | null = null
@@ -29,7 +32,7 @@ let port: number
 let vessel: ReturnType<typeof run>
 
 const resolve = (p: Record<string, any>): Response => {
-  if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA])
+  if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA, ...moreSchemas])
   // The owner also describes shapes it does not want produced (a detector's gap): never something to serve.
   if (p.type === "record_read" && p.shape === "shape_description") return Response.json([{ shape: "shape_description", id: "sd1", of: "gap" }])
   if (p.type === "record_read" && p.shape === "channel") return Response.json((p.ids as string[]).includes(CHANNEL.id) ? [CHANNEL] : [])
@@ -42,11 +45,11 @@ const resolve = (p: Record<string, any>): Response => {
   return Response.json({ error: "Not found" }, { status: 404 })
 }
 
-const produce = async (key: string) => {
+const produce = async (key: string, more: Record<string, unknown> = {}) => {
   const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `ApiKey ${key}` },
-    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1", "f1"], selection_ref: "sel-1", call_id: "call-1" } } }),
+    body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1", "f1"], selection_ref: "sel-1", call_id: "call-1", ...more } } }),
   })
   return { status: r.status, body: (await r.json()) as any }
 }
@@ -146,6 +149,27 @@ describe("described-shape vessel", () => {
     expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
     expect(down.status).toBe(503)
     expect(downCalls.some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
+  })
+
+  test("[MUST-FAIL] a produce asking for a schema variant applies that variant's newest row; one asking for none, the plain row", async () => {
+    moreSchemas = [{ ...SCHEMA, id: "s2", variant: "gap", description: "made from a gap", inputs: ["gap"] }]
+    const prompt = async (more: Record<string, unknown>) => {
+      const before = discovery.seen.length
+      const r = await produce(NODE_KEY, more)
+      const llm = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+      return { status: r.status, prompt: String(llm?.pointer?.prompt ?? "") }
+    }
+    const fromGap = await prompt({ variant: "gap", input_refs: ["g1", "h1"] })
+    const plain = await prompt({})
+    const unknown = await prompt({ variant: "nope" })
+    moreSchemas = []
+    expect(fromGap.status).toBe(200)
+    expect(fromGap.prompt).toContain("made from a gap")
+    expect(fromGap.prompt).toContain("a check that fails")
+    expect(plain.status).toBe(200)
+    expect(plain.prompt).toContain("the answer")
+    expect(plain.prompt).not.toContain("made from a gap") // the newer gap row is not the plain variant
+    expect(unknown.status).toBe(422)
   })
 
   test("a schema row with no inputs list is refused, not read as empty", async () => {

@@ -12,7 +12,7 @@ type ChannelCall = {
   output_field: string
   producer_field: string
 }
-type Ask = { shape: string; via_ref: string; input_refs: string[]; selection_ref: string; call_id: string }
+type Ask = { shape: string; via_ref: string; input_refs: string[]; selection_ref: string; call_id: string; variant?: string }
 type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 // Room for a gitDiff capped at 64 KiB of text where it is made, once JSON-escaped and with its fields.
@@ -63,7 +63,13 @@ const make = async (p: Ask): Promise<Response> => {
   if (!sch.ok) {
     return fail(sch.status, sch.text)
   }
-  const [schema] = (sch.body as Row[]).reverse()
+  // The newest row of the variant asked for (another way the owner makes the same shape, from other inputs); a row
+  // naming no variant, and an ask naming none, are the variant "".
+  const want = String(p.variant ?? "")
+  const [schema] = (sch.body as Row[]).filter((r) => String(r.variant ?? "") === want).reverse()
+  if (schema === undefined) {
+    return fail(422, `no shape_schema for ${p.shape}${want ? ` variant ${want}` : ""}`)
+  }
   const chs = await records(RECORD_READ, { shape: CHANNEL, ids: [p.via_ref] })
   if (!chs.ok) {
     return fail(chs.status, chs.text)

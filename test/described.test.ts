@@ -172,6 +172,27 @@ describe("described-shape vessel", () => {
     expect(unknown.status).toBe(422)
   })
 
+  test("[MUST-FAIL] context rows past the budget are left out, oldest first; the inputs stay whole and the row cites what was shown", async () => {
+    // 70 hops of about 3 KB each: more than the 192 KiB the context rows may take together
+    const hops = Array.from({ length: 70 }, (_, i) => ({ shape: "hop", id: `hb${i}`, seq: 100 + i, output: { text: `step-${i}. ` + "x".repeat(3000) } }))
+    INPUTS.push(...hops)
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ["w1", ...hops.map((h) => h.id)] })
+    INPUTS.splice(INPUTS.length - hops.length, hops.length)
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    expect(r.status).toBe(200)
+    expect(prompt).toContain("the question") // the input, whole
+    expect(prompt).toContain("step-69.") // the newest
+    expect(prompt).not.toContain("step-0.") // the oldest, left out
+    expect(prompt).toContain("older context rows are not shown")
+    const cited = w.pointer.row.input_refs as string[]
+    expect(cited).toContain("w1")
+    expect(cited).toContain("hb69")
+    expect(cited).not.toContain("hb0")
+  })
+
   test("a schema row with no inputs list is refused, not read as empty", async () => {
     const keep = (SCHEMA as any).inputs
     delete (SCHEMA as any).inputs

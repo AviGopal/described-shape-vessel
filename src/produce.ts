@@ -18,6 +18,9 @@ type Answer = { ok: boolean; status: number; body: unknown; text: string }
 // Room for a gitDiff capped at 64 KiB of text where it is made, once JSON-escaped and with its fields.
 const INPUT_ROW_MAX = 96 * 1024
 const CONTEXT_ROW_MAX = 8 * 1024
+// How much of a prompt the context rows may take together. A constant: named debt (agf_j6rpnacxgn8s), to come from an
+// owner row once one writes it.
+const CONTEXT_BUDGET = 192 * 1024
 const clip = (r: Row, max: number): Row => {
   const whole = JSON.stringify(r)
   return whole.length <= max ? r : ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, max) } as Row)
@@ -107,8 +110,26 @@ const make = async (p: Ask): Promise<Response> => {
   if (tooBig.length > 0) {
     return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(r).length} bytes)`).join(", ")}`)
   }
-  const shown = used.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
-  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: shown, reads: looked })
+  // Context rows grow with a request's age (every hop and failure of a long change), and a prompt holding them all went
+  // past the model's input ceiling: the producer was refused and the request went dark. So the context rows are taken
+  // newest first while they fit the budget; the inputs are always whole. The prompt says how many older ones it left
+  // out, and the row cites only the rows it was shown.
+  const order = new Map(used.map((r, i) => [r.id, typeof r.seq === "number" ? r.seq : i]))
+  const fitted = new Set<string>()
+  let spent = 0
+  for (const r of used.filter((x) => !inputs.has(String(x.shape))).sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))) {
+    const size = JSON.stringify(clip(r, CONTEXT_ROW_MAX)).length
+    if (spent + size > CONTEXT_BUDGET) break
+    spent += size
+    fitted.add(r.id)
+  }
+  const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
+  const omitted = used.length - seen.length
+  const shown = seen.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
+  let text = JSON.stringify({
+    description: schema.description, schema: schema.schema, inputs: shown, reads: looked,
+    ...(omitted > 0 ? { omitted: `${omitted} older context rows are not shown` } : {}),
+  })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })
@@ -144,7 +165,7 @@ const make = async (p: Ask): Promise<Response> => {
   const row = {
     ...body,
     shape: p.shape,
-    input_refs: used.map((r) => r.id),
+    input_refs: seen.map((r) => r.id),
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),

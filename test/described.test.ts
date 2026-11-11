@@ -21,7 +21,10 @@ const INPUTS = [
   { shape: "gap", id: "g1", summary: "a check that fails" },
 ]
 // What a record_lapsed read answers: deadline rows, as records returns them
-const LAPSED = [{ shape: "due", id: "d1", role: "described", within_ms: 60000, at: 1, input_refs: ["w1"] }]
+const LAPSED = [
+  { shape: "due", id: "d1", role: "described", within_ms: 60000, at: 1, input_refs: ["w1"] },
+  { shape: "due", id: "d9", role: "described", within_ms: 60000, at: 1, input_refs: ["w9"] }, // another request's
+]
 // Schema rows besides SCHEMA (newer ones, as records lists them oldest first)
 let moreSchemas: Array<Record<string, unknown>> = []
 
@@ -42,7 +45,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
     : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" } } })
-  if (p.type === "record_lapsed") return Response.json(LAPSED)
+  if (p.type === "record_lapsed") return Response.json(LAPSED.filter((r) => !Array.isArray(p.asks) || r.input_refs.some((id) => p.asks.includes(id))))
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -299,7 +302,7 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ r: 0, evidence_refs: ["d1"] })
     const judged = await produce(NODE_KEY)
     const row = writes().at(-1)?.body as any
-    llmContent = JSON.stringify({ r: 0, evidence_refs: ["d-never-shown"] })
+    llmContent = JSON.stringify({ r: 0, evidence_refs: ["d9"] }) // another request's deadline the read showed
     const other = await produce(NODE_KEY)
     const after = writes().length
     ;(SCHEMA as any).schema = keep
@@ -309,8 +312,22 @@ describe("described-shape vessel", () => {
     expect(row.pointer.row.input_refs).toEqual(["w1", "h1", "d1"])
     expect(other.status).toBe(422)
     expect(other.body.failure.refused).toBe("schema")
-    expect(other.body.failure.body).toContain('"d-never-shown"')
+    expect(other.body.failure.body).toContain('"d9"')
     expect(after - before).toBe(1) // the refused answer wrote nothing
+  })
+
+  test("[MUST-FAIL] a read pointer value {x-inputs} is bound to the input rows shown, so a scoped read answers about this request alone", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer", asks: { "x-inputs": true } }]
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY)
+    delete (SCHEMA as any).reads
+    const calls = discovery.seen.slice(before)
+    const read = calls.find((c) => (c.body as any).pointer.type === "record_lapsed")?.body as any
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    expect(r.status).toBe(200)
+    expect(read.pointer.asks).toEqual(["w1"])
+    expect(prompt).toContain('"d1"')
+    expect(prompt).not.toContain('"d9"')
   })
 
   test("[MUST-FAIL] a value the schema says names a served shape is refused when it is not one, and kept when it is", async () => {

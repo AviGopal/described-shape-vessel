@@ -107,8 +107,13 @@ const make = async (p: Ask): Promise<Response> => {
   const inputs = new Set((schema.inputs as unknown[]).map(String))
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
+  // A read pointer value {"x-inputs": true} is bound to the ids of the input rows shown, so a read the owner scopes to
+  // the request (record_lapsed's asks) answers about this request alone.
+  const inputIds = used.filter((r) => inputs.has(String(r.shape))).map((r) => r.id)
+  const bound = (pointer: object): object => Object.fromEntries(Object.entries(pointer).map(([k, v]) =>
+    [k, typeof v === "object" && v !== null && (v as Record<string, unknown>)["x-inputs"] === true ? inputIds : v]))
   for (const pointer of [schema.reads ?? []].flat() as object[]) {
-    const r = await resolve(pointer)
+    const r = await resolve(bound(pointer))
     if (!r.ok) {
       return fail(r.status, r.text)
     }
@@ -138,9 +143,11 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
   const omitted = used.length - seen.length
-  // Rows a read answered with are shown too, so the row cites them beside its inputs: a grade judging a deadline a read
-  // returned names a row it was given.
-  const read = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string") : [])
+  // Rows a read answered with are shown too. One that cites an input row (a deadline of this request) is cited beside the
+  // inputs, so a grade judging it names a row it was given; one that does not (another request's deadline, a gap) is
+  // not, so nothing may be judged from it.
+  const ofInputs = (x: Row): boolean => [x.input_refs].flat().some((id) => inputIds.includes(String(id)))
+  const read = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string" && ofInputs(x)) : [])
   const cited = [...new Set([...seen, ...read].map((r) => r.id))]
   const shown = seen.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
   let text = JSON.stringify({

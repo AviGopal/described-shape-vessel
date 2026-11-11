@@ -34,7 +34,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
-    : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" } } })
+    : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" } } })
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -199,6 +199,36 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ text: "hi" })
     expect(r.status).toBe(422)
     expect(JSON.stringify(r.body)).toContain("not json at all")
+  })
+
+  test("[MUST-FAIL] a value the schema says names a served shape is refused when it is not one, and kept when it is", async () => {
+    const keep = { schema: (SCHEMA as any).schema }
+    ;(SCHEMA as any).reads = [{ type: "shapeDescriptions", declared: true }]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["calls"],
+      properties: { calls: { type: "array", items: { type: "object", required: ["shape"], properties: {
+        shape: { type: "string", "x-shape-in": { read: "shapeDescriptions", keys_of: "content.shape_descriptions" } },
+      } } } },
+    }
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write").length
+    const before = writes()
+    llmContent = JSON.stringify({ calls: [{ shape: "fs_read" }, { shape: "wait-for" }] })
+    const kind = await produce(NODE_KEY)
+    llmContent = JSON.stringify({ calls: [{ shape: "hop" }] })
+    const written = await produce(NODE_KEY)
+    const refusedWrites = writes() - before
+    llmContent = JSON.stringify({ calls: [{ shape: "fs_read" }] })
+    const served = await produce(NODE_KEY)
+    ;(SCHEMA as any).schema = keep.schema
+    delete (SCHEMA as any).reads
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(kind.status).toBe(422)
+    expect(kind.body.failure.body).toContain('"wait-for"')
+    expect(kind.body.failure.body).not.toContain('"fs_read"')
+    expect(written.status).toBe(422) // a shape described as written, not served, is not one to call
+    expect(written.body.failure.body).toContain('"hop"')
+    expect(refusedWrites).toBe(0)
+    expect(served.status).toBe(200)
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {

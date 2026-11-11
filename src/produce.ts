@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check } from "./check"
+import { check, shapeIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA } from "./shapes"
@@ -67,12 +67,14 @@ const make = async (p: Ask): Promise<Response> => {
   const wanted = new Set([schema.inputs, schema.context ?? []].flat().map(String))
   const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
   const looked: unknown[] = []
+  const answered: Array<{ type: string; answer: unknown }> = []
   for (const pointer of [schema.reads ?? []].flat() as object[]) {
     const r = await resolve(pointer)
     if (!r.ok) {
       return fail(r.status, r.text)
     }
     looked.push(r.body)
+    answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
   }
   let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used, reads: looked })
   let last = { result: {} as Record<string, unknown>, field: "" }
@@ -100,6 +102,12 @@ const make = async (p: Ask): Promise<Response> => {
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
     return fail(422, checked.errors)
+  }
+  // A value the schema says must name something a read returned (a shape to call, among those served) is held to it
+  // here: a description alone did not stop a model copying names that are not shapes.
+  const outside = shapeIn(schema.schema, body, answered)
+  if (outside.length > 0) {
+    return fail(422, outside.join("; ").slice(0, 1000))
   }
   const row = {
     ...body,

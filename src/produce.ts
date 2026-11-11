@@ -82,6 +82,11 @@ const make = async (p: Ask): Promise<Response> => {
       return fail(r.status, r.text)
     }
     const result = r.body as Record<string, unknown>
+    // A channel that answers without its output field failed upstream (a provider error comes back as
+    // {resolved: false, error}); say what it returned instead of parsing the word "undefined".
+    if (typeof result?.[c.output_field] !== "string") {
+      return fail(502, JSON.stringify({ channel: c.pointer.type, missing: c.output_field, result }).slice(0, 1000))
+    }
     text = String(result[c.output_field])
     last = { result, field: c.producer_field }
   }
@@ -89,7 +94,8 @@ const make = async (p: Ask): Promise<Response> => {
   try {
     body = JSON.parse(unfenced(text)) as Record<string, unknown>
   } catch (e) {
-    return Response.json({ failure: { status: 422, body: String(e) } }, { status: 422 })
+    // The text that failed to parse is the evidence of why; carry its start.
+    return Response.json({ failure: { status: 422, body: `${String(e)}; text began: ${JSON.stringify(text.slice(0, 200))}` } }, { status: 422 })
   }
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {

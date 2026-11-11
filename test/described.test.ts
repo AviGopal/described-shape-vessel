@@ -21,6 +21,7 @@ const INPUTS = [
 ]
 
 let llmContent = JSON.stringify({ text: "hi" })
+let llmFailure: Record<string, unknown> | null = null
 let readsDown = false
 let discovery: Fake
 let identity: Fake
@@ -34,7 +35,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
     : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" } } })
-  if (p.type === "llm_completion") return Response.json({ content: llmContent, model: "model-served" })
+  if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
 }
@@ -180,6 +181,24 @@ describe("described-shape vessel", () => {
     const r = await produce(NODE_KEY)
     llmContent = JSON.stringify({ text: "hi" })
     expect(r.status).toBe(422)
+  })
+
+  test("[MUST-FAIL] a channel that answers without its output field fails with what it returned, not 'undefined'", async () => {
+    llmFailure = { resolved: false, error: "provider refused the request" }
+    const r = await produce(NODE_KEY)
+    llmFailure = null
+    const body = JSON.stringify(r.body)
+    expect(r.status).toBe(502)
+    expect(body).toContain("provider refused the request")
+    expect(body).not.toContain("undefined")
+  })
+
+  test("[MUST-FAIL] a 422 for text that is not JSON carries the start of that text", async () => {
+    llmContent = "not json at all"
+    const r = await produce(NODE_KEY)
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(r.status).toBe(422)
+    expect(JSON.stringify(r.body)).toContain("not json at all")
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {

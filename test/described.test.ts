@@ -217,6 +217,8 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ calls: [{ shape: "hop" }] })
     const written = await produce(NODE_KEY)
     const refusedWrites = writes() - before
+    llmContent = JSON.stringify({ calls: [{ shape: "constructor" }, { shape: "__proto__" }] })
+    const inherited = await produce(NODE_KEY)
     llmContent = JSON.stringify({ calls: [{ shape: "fs_read" }] })
     const served = await produce(NODE_KEY)
     ;(SCHEMA as any).schema = keep.schema
@@ -228,14 +230,20 @@ describe("described-shape vessel", () => {
     expect(written.status).toBe(422) // a shape described as written, not served, is not one to call
     expect(written.body.failure.body).toContain('"hop"')
     expect(refusedWrites).toBe(0)
+    expect(inherited.status).toBe(422) // a name every object inherits is not a key the read returned
+    for (const r of [kind, written, inherited]) expect(r.body.failure.refused).toBe("schema")
     expect(served.status).toBe(200)
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {
     llmContent = "not json"
-    expect((await produce(NODE_KEY)).status).toBe(422)
+    const unparsed = await produce(NODE_KEY)
+    expect(unparsed.status).toBe(422)
+    expect(unparsed.body.failure.refused).toBeUndefined()
     llmContent = JSON.stringify({ wrong: 1 })
-    expect((await produce(NODE_KEY)).status).toBe(422)
+    const misfit = await produce(NODE_KEY)
+    expect(misfit.status).toBe(422)
+    expect(misfit.body.failure.refused).toBe("schema")
     llmContent = JSON.stringify({ text: "hi" })
   })
 

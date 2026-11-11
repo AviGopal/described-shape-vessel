@@ -16,6 +16,10 @@ type Ask = { shape: string; via_ref: string; input_refs: string[]; selection_ref
 type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
+// The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
+// or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
+const refusedBySchema = (body: string): Response =>
+  Response.json({ failure: { status: 422, body, refused: "schema" } }, { status: 422 })
 
 // A model often wraps its JSON in a fenced code block, with or without prose around it. When the text holds exactly
 // one fenced block, parse its body; otherwise (none, or several, which is ambiguous) parse the text as it is, so
@@ -101,13 +105,13 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
-    return fail(422, checked.errors)
+    return refusedBySchema(checked.errors)
   }
   // A value the schema says must name something a read returned (a shape to call, among those served) is held to it
   // here: a description alone did not stop a model copying names that are not shapes.
   const outside = shapeIn(schema.schema, body, answered)
   if (outside.length > 0) {
-    return fail(422, outside.join("; ").slice(0, 1000))
+    return refusedBySchema(outside.join("; ").slice(0, 1000))
   }
   const row = {
     ...body,

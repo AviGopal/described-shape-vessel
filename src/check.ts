@@ -17,7 +17,7 @@ export const shapeIn = (schema: unknown, body: unknown, reads: Array<{ type: str
     const keys = String(rule.keys_of).split(".").reduce<unknown>(
       (v, k) => (typeof v === "object" && v !== null ? (v as Record<string, unknown>)[k] : undefined),
       reads.find((r) => r.type === rule.read)?.answer)
-    if (typeof keys !== "object" || keys === null || !(body in keys)) bad.push(`${at || "/"} ${JSON.stringify(body)} is not in ${rule.read}.${rule.keys_of}`)
+    if (typeof keys !== "object" || keys === null || !Object.hasOwn(keys, body)) bad.push(`${at || "/"} ${JSON.stringify(body)} is not in ${rule.read}.${rule.keys_of}`)
   }
   if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
     for (const [k, sub] of Object.entries(s.properties)) {

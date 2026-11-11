@@ -324,6 +324,21 @@ describe("described-shape vessel", () => {
     expect((await produce("not-a-key")).status).toBe(401)
   })
 
+  test("[MUST-FAIL] a schema read that answers no list of rows at boot exits 1 and says so, not a TypeError", async () => {
+    const notReady = fake((path, body) => path === "/resolve" && body?.pointer?.type === "record_read"
+      ? Response.json({ error: "records not ready" })
+      : Response.json(path === "/heartbeat" ? { nextHeartbeatMs: 600000 } : { ok: true }))
+    const { code, stderr } = await exitsNaming("src/index.ts", {
+      DESCRIBED_VESSEL_ID: "described-test", DESCRIBED_PORT: String(freePort()), DISCOVERY_URL: notReady.url,
+      DESCRIBED_ENDPOINT: "x", IDENTITY_VESSEL_URL: identity.url, METABOB_API_KEY: NODE_KEY,
+    })
+    notReady.stop()
+    expect(code).toBe(1)
+    expect(stderr).toContain("no list of rows")
+    expect(stderr).not.toContain("TypeError")
+    expect(stderr).not.toContain(NODE_KEY)
+  })
+
   test("a missing boot value exits 1 and names it, never its value", async () => {
     const { code, stderr } = await exitsNaming("src/index.ts", {
       DESCRIBED_VESSEL_ID: "described-test", DESCRIBED_PORT: String(freePort()), DISCOVERY_URL: discovery.url,

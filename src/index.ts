@@ -10,7 +10,16 @@ if (!schemas.ok) {
   console.error(`shape_schema read answered ${schemas.status}: ${schemas.text}`)
   process.exit(1)
 }
-const targets = [...new Set((schemas.body as Array<{ target: string }>).map((r) => String(r.target)))]
+// Only a list of rows (bare, or under content) is the owner's schemas. Anything else, such as records or discovery not
+// ready at boot and answering an error with a 200, is refused by name like a failed read, so the unit starts again
+// rather than crashing on it or serving nothing.
+const answer = schemas.body as unknown
+const rows = Array.isArray(answer) ? answer : (answer as { content?: unknown } | null)?.content
+if (!Array.isArray(rows)) {
+  console.error(`shape_schema read answered ${schemas.status} with no list of rows: ${JSON.stringify(answer).slice(0, 200)}`)
+  process.exit(1)
+}
+const targets = [...new Set((rows as Array<{ target: string }>).map((r) => String(r.target)))]
 
 Bun.serve({
   port: PORT,

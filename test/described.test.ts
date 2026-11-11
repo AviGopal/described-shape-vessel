@@ -30,7 +30,7 @@ let vessel: ReturnType<typeof run>
 
 const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA])
-  if (p.type === "record_read" && p.shape === "channel") return Response.json([CHANNEL])
+  if (p.type === "record_read" && p.shape === "channel") return Response.json((p.ids as string[]).includes(CHANNEL.id) ? [CHANNEL] : [])
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
@@ -233,6 +233,33 @@ describe("described-shape vessel", () => {
     expect(inherited.status).toBe(422) // a name every object inherits is not a key the read returned
     for (const r of [kind, written, inherited]) expect(r.body.failure.refused).toBe("schema")
     expect(served.status).toBe(200)
+  })
+
+  test("[MUST-FAIL] an oversized row is shown cut and marked, so it cannot push the prompt past the model's ceiling", async () => {
+    const big = { shape: "hop", id: "h-big", output: { stdout: "x".repeat(300_000) } }
+    INPUTS.push(big)
+    const before = discovery.seen.length
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1", "h-big"], selection_ref: "sel-1", call_id: "c" } } }),
+    })
+    INPUTS.pop()
+    expect(r.status).toBe(200)
+    const llm = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    expect(llm.pointer.prompt.length).toBeLessThan(40_000)
+    expect(llm.pointer.prompt).toContain('"cut":true')
+    expect(llm.pointer.prompt).toContain("data a request fetched") // a small row is shown whole
+    const w = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    expect(w.pointer.row.input_refs).toContain("h-big") // still counted as used
+  })
+
+  test("[MUST-FAIL] a call naming no channel is refused by name, not a 500", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", input_refs: ["w1"], selection_ref: "s", call_id: "c" } } }),
+    })
+    expect(r.status).toBe(422)
+    expect(((await r.json()) as any).failure.body).toContain("names no channel row")
   })
 
   test("an answer that is not the schema's JSON is refused with 422", async () => {

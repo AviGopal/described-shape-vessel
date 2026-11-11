@@ -15,6 +15,13 @@ type ChannelCall = {
 type Ask = { shape: string; via_ref: string; input_refs: string[]; selection_ref: string; call_id: string }
 type Answer = { ok: boolean; status: number; body: unknown; text: string }
 
+const INPUT_ROW_MAX = 64 * 1024
+const CONTEXT_ROW_MAX = 8 * 1024
+const clip = (r: Row, max: number): Row => {
+  const whole = JSON.stringify(r)
+  return whole.length <= max ? r : ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, max) } as Row)
+}
+
 export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
@@ -61,6 +68,10 @@ const make = async (p: Ask): Promise<Response> => {
     return fail(chs.status, chs.text)
   }
   const [channel] = chs.body as Row[]
+  // A call that names no channel (a template replaying a stored row as its pointer) is refused by name, not a crash.
+  if (channel === undefined || !Array.isArray(channel.calls)) {
+    return fail(422, `via_ref ${JSON.stringify(p.via_ref ?? null)} names no channel row`)
+  }
   const ins = await records(RECORD_READ, { ids: p.input_refs })
   if (!ins.ok) {
     return fail(ins.status, ins.text)
@@ -70,6 +81,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const wanted = new Set([schema.inputs, schema.context ?? []].flat().map(String))
   const used = (ins.body as Row[]).filter((r) => wanted.has(String(r.shape)))
+  const inputs = new Set((schema.inputs as unknown[]).map(String))
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
   for (const pointer of [schema.reads ?? []].flat() as object[]) {
@@ -80,7 +92,11 @@ const make = async (p: Ask): Promise<Response> => {
     looked.push(r.body)
     answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
   }
-  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: used, reads: looked })
+  // Each row is shown whole up to a size, then cut and marked as cut, so one oversized row (a tool's whole stdout
+  // recorded in a hop) cannot push every prompt that reads it past the model's input ceiling. A row the schema takes as
+  // an input gets more room than one it shows only as context. The row still counts as used: its id is in input_refs.
+  const shown = used.map((r) => clip(r, inputs.has(String(r.shape)) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX))
+  let text = JSON.stringify({ description: schema.description, schema: schema.schema, inputs: shown, reads: looked })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })

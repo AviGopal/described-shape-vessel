@@ -30,6 +30,8 @@ let vessel: ReturnType<typeof run>
 
 const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA])
+  // The owner also describes shapes it does not want produced (a detector's gap): never something to serve.
+  if (p.type === "record_read" && p.shape === "shape_description") return Response.json([{ shape: "shape_description", id: "sd1", of: "gap" }])
   if (p.type === "record_read" && p.shape === "channel") return Response.json((p.ids as string[]).includes(CHANNEL.id) ? [CHANNEL] : [])
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
@@ -86,6 +88,12 @@ describe("described-shape vessel", () => {
     const body = reg?.body as { shapes: string[]; resolve_timeout_ms: number }
     expect(body.shapes).toEqual(["answer"])
     expect(body.resolve_timeout_ms).toBe(2147483647)
+  })
+
+  test("the owner's description of a shape (a detector's gap) is never served: only schema targets are", () => {
+    const reg = discovery.seen.find((s) => s.path === "/register")
+    expect((reg?.body as { shapes: string[] }).shapes).not.toContain("gap")
+    expect(discovery.seen.some((s) => s.path === "/resolve" && (s.body as any).pointer?.shape === "shape_description")).toBe(false)
   })
 
   test("a node-self produce calls the channel through discovery and writes the checked row", async () => {

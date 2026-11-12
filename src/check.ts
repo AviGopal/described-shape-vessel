@@ -44,6 +44,33 @@ export const shownIn = (schema: unknown, body: unknown, ids: Set<string>, at = "
   return bad
 }
 
+// A schema property may say its value must be what a row the producer was shown holds:
+// "x-equals": {"shape": <the shown rows' shape>, "path": <the dotted path in those rows>}. A grader then cannot state a
+// fact about its inputs (whether a check ran, say) that the input does not hold. With no shown row of the shape, or
+// shown rows that disagree at the path, the value is refused too: there is nothing it could equal.
+type EqualsIn = { shape: string; path: string }
+const at_ = (v: unknown, path: string): unknown =>
+  String(path).split(".").reduce<unknown>((x, k) => (typeof x === "object" && x !== null ? (x as Record<string, unknown>)[k] : undefined), v)
+export const equalsIn = (schema: unknown, body: unknown, rows: Array<Record<string, unknown>>, at = ""): string[] => {
+  if (typeof schema !== "object" || schema === null) return []
+  const s = schema as { "x-equals"?: EqualsIn; properties?: Record<string, unknown>; items?: unknown }
+  const bad: string[] = []
+  const rule = s["x-equals"]
+  if (rule) {
+    const held = [...new Set(rows.filter((r) => String(r.shape) === String(rule.shape)).map((r) => JSON.stringify(at_(r, rule.path))))]
+    if (held.length !== 1 || held[0] !== JSON.stringify(body)) {
+      bad.push(`${at || "/"} ${JSON.stringify(body)} is not what the ${rule.shape} row shown holds at ${rule.path} (${held.join(" | ") || "none shown"})`)
+    }
+  }
+  if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
+    for (const [k, sub] of Object.entries(s.properties)) {
+      if (k in body) bad.push(...equalsIn(sub, (body as Record<string, unknown>)[k], rows, `${at}/${k}`))
+    }
+  }
+  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...equalsIn(s.items, v, rows, `${at}/${i}`)))
+  return bad
+}
+
 // Whether a row is one an inputs or context entry names: a shape, or {shape, where} with each where field equal to the
 // row's (a list: any of its values).
 export const matches = (r: Record<string, unknown>, e: unknown): boolean => {

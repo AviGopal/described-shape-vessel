@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, matches, shapeIn, shownIn } from "./check"
+import { check, equalsIn, matches, shapeIn, shownIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA } from "./shapes"
@@ -220,6 +220,11 @@ const make = async (p: Ask): Promise<Response> => {
   const unseen = shownIn(schema.schema, body, new Set(cited))
   if (unseen.length > 0) {
     return refusedBySchema(unseen.join("; ").slice(0, 1000))
+  }
+  // And a value it says must be what a shown row holds must be exactly that.
+  const unequal = equalsIn(schema.schema, body, seen)
+  if (unequal.length > 0) {
+    return refusedBySchema(unequal.join("; ").slice(0, 1000))
   }
   const row = {
     ...body,

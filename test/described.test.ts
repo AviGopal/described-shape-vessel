@@ -436,6 +436,27 @@ describe("described-shape vessel", () => {
     expect(r.cited).not.toContain("gd-old")
   })
 
+  test("[MUST-FAIL] a value the schema binds to a shown row (x-equals) must be what that row holds", async () => {
+    const [inputs, schema, content] = [SCHEMA.inputs, SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).inputs = ["world_changed", "gitDiff"]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["text", "ran"],
+      properties: { text: { type: "string" }, ran: { type: "boolean", "x-equals": { shape: "gitDiff", path: "typecheck.ran" } } },
+    }
+    const diff = { shape: "gitDiff", id: "gd-x", seq: 3, typecheck: { ran: false, passed: false, why: "not fast-forward" } }
+    INPUTS.push(diff)
+    llmContent = JSON.stringify({ text: "typecheck failed", ran: true }) // says a check ran that never did
+    const lie = await askWith(["w1", "gd-x"])
+    llmContent = JSON.stringify({ text: "typecheck did not run: not fast-forward", ran: false })
+    const truth = await askWith(["w1", "gd-x"])
+    INPUTS.splice(INPUTS.length - 1, 1)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(lie.status).toBe(422)
+    expect(truth.status).toBe(200)
+  })
+
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
     const context = SCHEMA.context
     ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true }]

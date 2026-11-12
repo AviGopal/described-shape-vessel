@@ -382,6 +382,63 @@ describe("described-shape vessel", () => {
     expect(w.pointer.row.input_refs).toContain("h-big") // still counted as used
   })
 
+  const askWith = async (ids: string[]) => {
+    const before = discovery.seen.length
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ids, selection_ref: "s-w", call_id: "c" } } }),
+    })
+    const seen = discovery.seen.slice(before)
+    const llm = seen.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    const w = seen.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    return { status: r.status, prompt: String(llm?.pointer.prompt ?? ""), cited: (w?.pointer.row.input_refs ?? []) as string[] }
+  }
+  const WHOLE = { shape: "fileContent", whole: true, latest_by: "path", covers: { shape: "hop", on: "call_id" } }
+
+  test("[MUST-FAIL] a context row the owner asks shown whole is shown whole; an older read of the same path, and the call that fetched it, are not", async () => {
+    const context = SCHEMA.context
+    ;(SCHEMA as any).context = ["hop", WHOLE]
+    const path = "/trees/demo-vessel-mwabc123-1a2b3c4d/src/login.ts"
+    const rows = [
+      { shape: "fileContent", id: "fc-old", seq: 1, path, content: "OLD_TEXT_BEFORE_THE_EDIT", call_id: "c1" },
+      { shape: "fileContent", id: "fc-new", seq: 3, path, content: `${"a".repeat(20_000)}TAIL_OF_THE_FILE`, call_id: "c9" },
+      { shape: "hop", id: "h-c9", seq: 2, call_id: "c9", output: { content: `${"a".repeat(10_000)}HOP_COPY` } },
+    ]
+    INPUTS.push(...rows)
+    const r = await askWith(["w1", "h1", "fc-old", "fc-new", "h-c9"])
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = context
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("TAIL_OF_THE_FILE") // past 8 KiB: shown whole, not cut
+    expect(r.prompt).not.toContain("OLD_TEXT_BEFORE_THE_EDIT") // the newer read of the same path replaces it
+    expect(r.prompt).not.toContain("HOP_COPY") // the call that fetched it does not spend the budget again
+    expect(r.cited).toContain("fc-new")
+    expect(r.cited).not.toContain("fc-old")
+    expect(r.cited).not.toContain("h-c9")
+    expect(r.cited).toContain("h1") // other context still shown
+  })
+
+  test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
+    const context = SCHEMA.context
+    ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true }]
+    const rows = [
+      { shape: "fileContent", id: "fc-a", seq: 5, path: "/a.ts", content: `${"b".repeat(90_000)}A_END` },
+      { shape: "fileContent", id: "fc-b", seq: 4, path: "/b.ts", content: `${"c".repeat(90_000)}B_END` },
+      { shape: "fileContent", id: "fc-c", seq: 3, path: "/c.ts", content: `${"d".repeat(90_000)}C_END` },
+    ]
+    INPUTS.push(...rows)
+    const r = await askWith(["w1", "fc-a", "fc-b", "fc-c"])
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = context
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("A_END")
+    expect(r.prompt).toContain("B_END")
+    expect(r.prompt).not.toContain("C_END") // the budget is spent: left out whole
+    expect(r.prompt).not.toContain('"cut":true') // nothing cut to fit
+    expect(r.prompt).toContain("older context rows are not shown")
+    expect(r.cited).not.toContain("fc-c")
+  })
+
   test("[MUST-FAIL] an input row too big to show whole is refused by name, never cut", async () => {
     const huge = { shape: "world_changed", id: "w-huge", what: "y".repeat(200_000) }
     INPUTS.push(huge)

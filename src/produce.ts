@@ -96,7 +96,7 @@ const make = async (p: Ask): Promise<Response> => {
   // does); that other row is neither shown nor cited.
   const wanted = [schema.inputs, schema.context ?? []].flat()
   const all = ins.body as Row[]
-  const used = all.flatMap((r) => {
+  let used = all.flatMap((r) => {
     const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
     if (e === undefined) return []
     const on = String(e.join?.on ?? "")
@@ -104,7 +104,32 @@ const make = async (p: Ask): Promise<Response> => {
     const from = on && take.length > 0 ? all.find((x) => x !== r && x.shape === r.shape && x[on] !== undefined && x[on] === r[on]) : undefined
     return [from === undefined ? r : { ...r, ...Object.fromEntries(take.filter((k) => from[k] !== undefined).map((k) => [k, from[k]])) }]
   })
+  // A context entry may also say how its rows are shown: whole (unclipped, as an input is, up to the same per-row cap,
+  // within the context budget: a file the producer must quote is no use cut), latest_by <field> (only the newest row per
+  // value of that field: a file read again after an edit replaces the older read), and covers {shape, on} (rows of that
+  // shape with the same value at on are left out once a whole row is shown: the tool call that fetched the row would
+  // otherwise spend the budget on the same text again). The shapes and fields are the owner's; this names none.
+  type Entry = { whole?: unknown; latest_by?: unknown; covers?: { shape?: unknown; on?: unknown } }
+  const entryOf = (r: Row): Entry | undefined => wanted.find((x) => matches(r, x)) as Entry | undefined
+  const left = new Set<string>()
+  const newest = new Map<string, Row>()
+  for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
+    const by = entryOf(r)?.latest_by
+    if (typeof by !== "string") continue
+    const k = `${wanted.findIndex((x) => matches(r, x))}|${JSON.stringify(r[by])}`
+    const older = newest.get(k)
+    if (older !== undefined) left.add(older.id)
+    newest.set(k, r)
+  }
+  for (const w of used.filter((r) => !left.has(r.id) && entryOf(r)?.whole === true)) {
+    const c = entryOf(w)?.covers
+    if (typeof c?.shape !== "string" || typeof c.on !== "string" || w[c.on] === undefined) continue
+    for (const r of used) if (r !== w && r.shape === c.shape && r[c.on] === w[c.on]) left.add(r.id)
+  }
+  used = used.filter((r) => !left.has(r.id))
   const inputs = new Set((schema.inputs as unknown[]).map(String))
+  const isWhole = (r: Row): boolean => !inputs.has(String(r.shape)) && entryOf(r)?.whole === true
+  const shownAs = (r: Row): Row => inputs.has(String(r.shape)) ? r : clip(r, isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
   // A read pointer value {"x-inputs": true} is bound to the ids of the input rows shown, so a read the owner scopes to
@@ -136,8 +161,12 @@ const make = async (p: Ask): Promise<Response> => {
   const fitted = new Set<string>()
   let spent = 0
   for (const r of used.filter((x) => !inputs.has(String(x.shape))).sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))) {
-    const size = JSON.stringify(clip(r, CONTEXT_ROW_MAX)).length
-    if (spent + size > CONTEXT_BUDGET) break
+    const size = JSON.stringify(shownAs(r)).length
+    if (spent + size > CONTEXT_BUDGET) {
+      // a whole row that does not fit is left out, and counted as not shown, never cut to fit; a smaller one may still
+      if (isWhole(r)) continue
+      break
+    }
     spent += size
     fitted.add(r.id)
   }
@@ -149,7 +178,7 @@ const make = async (p: Ask): Promise<Response> => {
   const ofInputs = (x: Row): boolean => [x.input_refs].flat().some((id) => inputIds.includes(String(id)))
   const read = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string" && ofInputs(x)) : [])
   const cited = [...new Set([...seen, ...read].map((r) => r.id))]
-  const shown = seen.map((r) => inputs.has(String(r.shape)) ? r : clip(r, CONTEXT_ROW_MAX))
+  const shown = seen.map(shownAs)
   let text = JSON.stringify({
     description: schema.description, schema: schema.schema, inputs: shown, reads: looked,
     ...(omitted > 0 ? { omitted: `${omitted} older context rows are not shown` } : {}),

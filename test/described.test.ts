@@ -418,6 +418,24 @@ describe("described-shape vessel", () => {
     expect(r.cited).toContain("h1") // other context still shown
   })
 
+  test("[MUST-FAIL] an input named as {shape, latest_by} is an input: its newest row is shown whole, the older one not at all", async () => {
+    const inputs = SCHEMA.inputs
+    ;(SCHEMA as any).inputs = ["world_changed", { shape: "gitDiff", latest_by: "shape" }]
+    const rows = [
+      { shape: "gitDiff", id: "gd-old", seq: 2, tree: "t-old", diff: "OLD_DIFF_THAT_WAS_SUPERSEDED" },
+      { shape: "gitDiff", id: "gd-new", seq: 4, tree: "t-new", diff: `${"x".repeat(20_000)}TAIL_OF_THE_NEW_DIFF` },
+    ]
+    INPUTS.push(...rows)
+    const r = await askWith(["w1", "gd-old", "gd-new"])
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).inputs = inputs
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("TAIL_OF_THE_NEW_DIFF") // an input: never cut to a context row's size
+    expect(r.prompt).not.toContain("OLD_DIFF_THAT_WAS_SUPERSEDED")
+    expect(r.cited).toContain("gd-new")
+    expect(r.cited).not.toContain("gd-old")
+  })
+
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
     const context = SCHEMA.context
     ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true }]

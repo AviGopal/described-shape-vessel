@@ -127,7 +127,8 @@ const make = async (p: Ask): Promise<Response> => {
     for (const r of used) if (r !== w && r.shape === c.shape && r[c.on] === w[c.on]) left.add(r.id)
   }
   used = used.filter((r) => !left.has(r.id))
-  const inputs = new Set((schema.inputs as unknown[]).map(String))
+  // An input entry is a shape or {shape, ...} (latest_by among them), as a context entry is: its shape is the input.
+  const inputs = new Set((schema.inputs as unknown[]).map((e) => typeof e === "object" && e !== null ? String((e as { shape?: unknown }).shape) : String(e)))
   const isWhole = (r: Row): boolean => !inputs.has(String(r.shape)) && entryOf(r)?.whole === true
   const shownAs = (r: Row): Row => inputs.has(String(r.shape)) ? r : clip(r, isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
   const looked: unknown[] = []

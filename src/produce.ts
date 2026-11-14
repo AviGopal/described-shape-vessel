@@ -21,6 +21,25 @@ const CONTEXT_ROW_MAX = 8 * 1024
 // How much of a prompt the context rows may take together. A constant: named debt (agf_j6rpnacxgn8s), to come from an
 // owner row once one writes it.
 const CONTEXT_BUDGET = 192 * 1024
+
+/**
+ * The rows nested inside the walk's own records of what a call returned (rows of role walk: a hop's output is what a
+ * vessel answered, records' stamped row included), by id: objects carrying a string id and shape and records' stamps
+ * (a numeric seq, a writer, a role). Rows a model wrote (an answer, a judgement) are not walked: an object shaped like a
+ * row inside one is text a model produced, not a row it was shown.
+ */
+export const embeddedRows = (rows: unknown[]): Map<string, Record<string, unknown>> => {
+  const out = new Map<string, Record<string, unknown>>()
+  const walk = (v: unknown, nested: boolean): void => {
+    if (typeof v !== "object" || v === null) return
+    if (Array.isArray(v)) { for (const x of v) walk(x, true); return }
+    const o = v as Record<string, unknown>
+    if (nested && typeof o.id === "string" && typeof o.shape === "string" && typeof o.seq === "number" && typeof o.writer === "string" && typeof o.role === "string") out.set(o.id, o)
+    for (const x of Object.values(o)) walk(x, true)
+  }
+  for (const r of rows) if ((r as { role?: unknown })?.role === "walk") walk(r, false)
+  return out
+}
 const clip = (r: Row, max: number): Row => {
   const whole = JSON.stringify(r)
   return whole.length <= max ? r : ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, max) } as Row)
@@ -216,8 +235,26 @@ const make = async (p: Ask): Promise<Response> => {
   if (outside.length > 0) {
     return refusedBySchema(outside.join("; ").slice(0, 1000))
   }
-  // And a value it says names a row the producer was shown must be one of those rows.
-  const unseen = shownIn(schema.schema, body, new Set(cited))
+  // And a value it says names a row the producer was shown must be one of those rows. A row the walk's record of a call
+  // carried whole (a hop's output: the row a vessel answered with) was shown too, as the prompt rendered it (after the
+  // clip, so a row the clip cut was not). Such a row is cited as shown only when records holds it with the same stamps
+  // (shape, seq, writer, role): read by id only when an answer cites one, so most answers cost nothing more. It widens
+  // only what an answer may cite, never input_refs, which stay the rows the producer was given.
+  const shownIds = new Set(cited)
+  let unseen = shownIn(schema.schema, body, shownIds)
+  if (unseen.length > 0) {
+    const carried = embeddedRows([...shown, ...read])
+    const asked = [...new Set(unseen.map((u) => /"([^"]+)" is not a row it was shown/.exec(u)?.[1]).filter((id): id is string => !!id && carried.has(id)))]
+    if (asked.length > 0) {
+      const held = await records(RECORD_READ, { ids: asked })
+      const stored = held.ok && Array.isArray(held.body) ? held.body as Row[] : []
+      for (const r of stored) {
+        const e = carried.get(String(r.id))
+        if (e && e.shape === r.shape && e.seq === r.seq && e.writer === r.writer && e.role === r.role) shownIds.add(String(r.id))
+      }
+      unseen = shownIn(schema.schema, body, shownIds)
+    }
+  }
   if (unseen.length > 0) {
     return refusedBySchema(unseen.join("; ").slice(0, 1000))
   }

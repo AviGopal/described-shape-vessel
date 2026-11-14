@@ -19,6 +19,18 @@ const INPUTS = [
   { shape: "hop", id: "h1", output: { text: "data a request fetched" } },
   { shape: "failure", id: "f1", body: "a draft answer from an earlier attempt" },
   { shape: "gap", id: "g1", summary: "a check that fails" },
+  // The walk's record of a call whose answer was a row records stamped, whole; it names in its input_refs a row never shown.
+  { shape: "hop", id: "h2", role: "walk", input_refs: ["w7"], output: { shape: "change_wanted", id: "cw1", seq: 5, writer: "ds", role: "described", repo: "a-vessel" } },
+  // Too big to show whole: the clip cuts it, and the row inside goes with it.
+  { shape: "hop", id: "h3", role: "walk", output: { shape: "change_wanted", id: "cw2", seq: 6, writer: "ds", role: "described", pad: "x".repeat(9 * 1024) } },
+  // The walk's record carrying an object stamped unlike the row records holds (a forged copy).
+  { shape: "hop", id: "h4", role: "walk", output: { shape: "change_wanted", id: "cw3", seq: 999, writer: "ds", role: "described" } },
+  // A row a producer wrote (not the walk's record of a call) carrying an object shaped like a stamped row.
+  { shape: "hop", id: "h5", role: "described", output: { shape: "change_wanted", id: "cw1", seq: 5, writer: "ds", role: "described" } },
+  // What records holds for those ids.
+  { shape: "change_wanted", id: "cw1", seq: 5, writer: "ds", role: "described", repo: "a-vessel" },
+  { shape: "change_wanted", id: "cw2", seq: 6, writer: "ds", role: "described" },
+  { shape: "change_wanted", id: "cw3", seq: 7, writer: "ds", role: "described" },
 ]
 // What a record_lapsed read answers: deadline rows, as records returns them
 const LAPSED = [
@@ -314,6 +326,38 @@ describe("described-shape vessel", () => {
     expect(other.body.failure.refused).toBe("schema")
     expect(other.body.failure.body).toContain('"d9"')
     expect(after - before).toBe(1) // the refused answer wrote nothing
+  })
+
+  test("[MUST-FAIL] a row the walk's record of a call carried whole may be cited, as records holds it; input_refs stay what was given", async () => {
+    const keep = (SCHEMA as any).schema
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["evidence_refs"],
+      properties: { evidence_refs: { type: "array", items: { type: "string", "x-shown": true } } },
+    }
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write")
+    const answer = async (ref: string, refs: string[]) => {
+      llmContent = JSON.stringify({ evidence_refs: [ref] })
+      return produce(NODE_KEY, { input_refs: refs })
+    }
+    const before = writes().length
+    const nested = await answer("cw1", ["w1", "h2"])
+    const written = writes().at(-1)?.body as any
+    const afterNested = writes().length
+    const clipped = await answer("cw2", ["w1", "h3"])
+    const named = await answer("w7", ["w1", "h2"])
+    const forged = await answer("cw3", ["w1", "h4"])
+    const notRecorded = await answer("cw1", ["w1", "h5"])
+    const after = writes().length
+    ;(SCHEMA as any).schema = keep
+    llmContent = JSON.stringify({ text: "hi" })
+    expect(nested.status).toBe(200)
+    expect(afterNested - before).toBe(1)
+    expect(written.pointer.row.input_refs).toEqual(["w1", "h2"]) // lineage: what was given, not what a given row carried
+    for (const [r, id] of [[clipped, "cw2"], [named, "w7"], [forged, "cw3"], [notRecorded, "cw1"]] as const) {
+      expect([id, r.status]).toEqual([id, 422])
+      expect(r.body.failure.body).toContain(`"${id}" is not a row it was shown`)
+    }
+    expect(after - afterNested).toBe(0) // the refused answers wrote nothing
   })
 
   test("[MUST-FAIL] a read pointer value {x-inputs} is bound to the input rows shown, so a scoped read answers about this request alone", async () => {

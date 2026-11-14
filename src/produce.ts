@@ -192,6 +192,14 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
   const omitted = used.length - seen.length
+  // A whole row the budget left out is named, not only counted: it is one the owner asked to be shown whole (a file the
+  // producer must quote), and the hop that fetched it may already be left out as covered, so a count alone would hide
+  // that a read happened at all. Named by its shape, id and size, and by the value of the field its entry keeps the
+  // newest of (latest_by), when it has one; the fields are the owner's, as the entry's are.
+  const notShownWhole = used.filter((r) => !inputs.has(String(r.shape)) && !fitted.has(r.id) && isWhole(r)).slice(0, 20).map((r) => {
+    const by = entryOf(r)?.latest_by
+    return { shape: r.shape, id: r.id, bytes: JSON.stringify(r).length, ...(typeof by === "string" && r[by] !== undefined ? { [by]: r[by] } : {}) }
+  })
   // Rows a read answered with are shown too. One that cites an input row (a deadline of this request) is cited beside the
   // inputs, so a grade judging it names a row it was given; one that does not (another request's deadline, a gap) is
   // not, so nothing may be judged from it.
@@ -202,6 +210,7 @@ const make = async (p: Ask): Promise<Response> => {
   let text = JSON.stringify({
     description: schema.description, schema: schema.schema, inputs: shown, reads: looked,
     ...(omitted > 0 ? { omitted: `${omitted} older context rows are not shown` } : {}),
+    ...(notShownWhole.length > 0 ? { not_shown_whole: notShownWhole } : {}),
   })
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {

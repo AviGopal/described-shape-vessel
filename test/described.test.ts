@@ -503,7 +503,7 @@ describe("described-shape vessel", () => {
 
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
     const context = SCHEMA.context
-    ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true }]
+    ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true, latest_by: "path" }]
     const rows = [
       { shape: "fileContent", id: "fc-a", seq: 5, path: "/a.ts", content: `${"b".repeat(90_000)}A_END` },
       { shape: "fileContent", id: "fc-b", seq: 4, path: "/b.ts", content: `${"c".repeat(90_000)}B_END` },
@@ -520,6 +520,9 @@ describe("described-shape vessel", () => {
     expect(r.prompt).not.toContain('"cut":true') // nothing cut to fit
     expect(r.prompt).toContain("older context rows are not shown")
     expect(r.cited).not.toContain("fc-c")
+    // and named, with the field its entry keeps the newest of, so the producer knows a read of /c.ts exists unseen
+    const named = (JSON.parse(r.prompt) as { not_shown_whole?: Array<Record<string, unknown>> }).not_shown_whole ?? []
+    expect(named.map((x) => [x.shape, x.id, x.path])).toEqual([["fileContent", "fc-c", "/c.ts"]])
   })
 
   test("[MUST-FAIL] an input row too big to show whole is refused by name, never cut", async () => {

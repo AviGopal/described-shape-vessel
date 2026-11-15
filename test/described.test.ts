@@ -211,6 +211,72 @@ describe("described-shape vessel", () => {
     expect(cited).not.toContain("hb0")
   })
 
+  // The request's own clone, kept in view however much newer context there is (the owner's keep, within keep_share).
+  const keepRun = async (opts: { keep?: boolean; share?: number; extra?: Array<Record<string, unknown>> }) => {
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = ["hop", "failure", { shape: "gitWorktree", latest_by: "repo", ...(opts.keep ? { keep: true } : {}) }]
+    if (opts.share !== undefined) (SCHEMA as any).keep_share = opts.share
+    // bigger than any slack the newest-first fill can leave (each hop is about 3 KB), so only keep can bring it in
+    const clone = { shape: "gitWorktree", id: "gw-own", seq: 50, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], note: "c".repeat(3500) }
+    const hops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hk${i}`, seq: 100 + i, output: { text: `kstep-${i}. ` + "x".repeat(3000) } }))
+    const rows = [clone, ...hops, ...(opts.extra ?? [])]
+    INPUTS.push(...(rows as any))
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = ctx
+    delete (SCHEMA as any).keep_share
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    return { status: r.status, prompt, row }
+  }
+
+  test("[MUST-FAIL] a kept entry's row is shown and cited past more than the whole budget of newer context; the row records what was left out", async () => {
+    const r = await keepRun({ keep: true, share: 0.25 })
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("/trees/OWN_CLONE")
+    expect(r.row.input_refs).toContain("gw-own")
+    expect(r.prompt).toContain("kstep-79.") // the newest still shown
+    expect(r.row.context_omitted).toBeGreaterThan(0)
+    expect(typeof r.row.oldest_shown_seq).toBe("number")
+  })
+
+  test("[MUST-FAIL] with no keep, no keep_share, or a share too small for it, the old clone is left out: kept rows never pass their share", async () => {
+    for (const o of [{ keep: false, share: 0.25 }, { keep: true }, { keep: true, share: 0.01 }]) {
+      const r = await keepRun(o)
+      expect(r.prompt).not.toContain("/trees/OWN_CLONE")
+      expect(r.row.input_refs).not.toContain("gw-own")
+    }
+  })
+
+  test("[MUST-FAIL] a kept-shape row reached through another request's lineage is not kept; the newest failure is still shown", async () => {
+    const other = { shape: "gitWorktree", id: "gw-other", seq: 60, repo: "hsv2", cwd: "/trees/OTHER_CLONE", input_refs: ["w9"], note: "o".repeat(3500) }
+    const fail = { shape: "failure", id: "f-new", seq: 200, body: "NEWEST_REFUSAL_REASON" }
+    const r = await keepRun({ keep: true, share: 0.25, extra: [other, fail] })
+    expect(r.prompt).not.toContain("/trees/OTHER_CLONE")
+    expect(r.prompt).toContain("/trees/OWN_CLONE")
+    expect(r.prompt).toContain("NEWEST_REFUSAL_REASON")
+  })
+
+  test("[MUST-FAIL] one row too big for what is left is skipped, and older small rows still fill the budget", async () => {
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = ["hop"]
+    // 25 newest rows of about 7.85 KB nearly fill the 192 KiB; the next older one, as big, does not fit; older small ones do
+    const newer = Array.from({ length: 25 }, (_, i) => ({ shape: "hop", id: `hn${i}`, seq: 600 + i, output: { text: "n".repeat(7800) } }))
+    const big = { shape: "hop", id: "h-big", seq: 500, output: { text: "z".repeat(7800) } }
+    const small = Array.from({ length: 3 }, (_, i) => ({ shape: "hop", id: `hs${i}`, seq: 10 + i, output: { text: `small-${i}.` } }))
+    const rows = [...small, big, ...newer]
+    INPUTS.push(...(rows as any))
+    const before = discovery.seen.length
+    await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = ctx
+    const prompt = String((discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    expect(prompt).not.toContain("zzzzzzzzzz") // the one that did not fit is left out
+    expect(prompt).toContain("small-2.") // and the fill went on past it
+  })
+
   test("a schema row with no inputs list is refused, not read as empty", async () => {
     const keep = (SCHEMA as any).inputs
     delete (SCHEMA as any).inputs

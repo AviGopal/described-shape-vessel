@@ -128,7 +128,7 @@ const make = async (p: Ask): Promise<Response> => {
   // value of that field: a file read again after an edit replaces the older read), and covers {shape, on} (rows of that
   // shape with the same value at on are left out once a whole row is shown: the tool call that fetched the row would
   // otherwise spend the budget on the same text again). The shapes and fields are the owner's; this names none.
-  type Entry = { whole?: unknown; latest_by?: unknown; covers?: { shape?: unknown; on?: unknown } }
+  type Entry = { whole?: unknown; latest_by?: unknown; covers?: { shape?: unknown; on?: unknown }; keep?: unknown }
   const entryOf = (r: Row): Entry | undefined => wanted.find((x) => matches(r, x)) as Entry | undefined
   const left = new Set<string>()
   const newest = new Map<string, Row>()
@@ -176,20 +176,31 @@ const make = async (p: Ask): Promise<Response> => {
   // Context rows grow with a request's age (every hop and failure of a long change), and a prompt holding them all went
   // past the model's input ceiling: the producer was refused and the request went dark. So the context rows are taken
   // newest first while they fit the budget; the inputs are always whole. The prompt says how many older ones it left
-  // out, and the row cites only the rows it was shown.
+  // out, the row records it (context_omitted, oldest_shown_seq), and the row cites only the rows it was shown.
+  // A row that does not fit is skipped and the fill goes on: stopping at it hid every older row behind one big one.
+  // Some rows matter however old they are (a request's own clone: its cwd is where every call works). The owner marks
+  // such an entry keep: true, and its rows are fitted first, newest first, within a share of the budget the schema row
+  // gives (keep_share, 0 to 1; with none, nothing is fitted first). Only a row that cites one of this produce's inputs is
+  // kept so: the request's own, never a row another request's lineage reached.
   const order = new Map(used.map((r, i) => [r.id, typeof r.seq === "number" ? r.seq : i]))
+  const newestFirst = (rs: Row[]): Row[] => [...rs].sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))
+  const share = typeof schema.keep_share === "number" && schema.keep_share > 0 && schema.keep_share <= 1 ? schema.keep_share : 0
+  const own = (r: Row): boolean => [r.input_refs].flat().some((id) => inputIds.includes(String(id)))
+  const kept = share > 0 ? used.filter((r) => !inputs.has(String(r.shape)) && entryOf(r)?.keep === true && own(r)) : []
   const fitted = new Set<string>()
   let spent = 0
-  for (const r of used.filter((x) => !inputs.has(String(x.shape))).sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))) {
-    const size = JSON.stringify(shownAs(r)).length
-    if (spent + size > CONTEXT_BUDGET) {
-      // a whole row that does not fit is left out, and counted as not shown, never cut to fit; a smaller one may still
-      if (isWhole(r)) continue
-      break
+  const fill = (rs: Row[], budget: number): void => {
+    for (const r of newestFirst(rs)) {
+      if (fitted.has(r.id)) continue
+      const size = JSON.stringify(shownAs(r)).length
+      // a row that does not fit is left out and counted as not shown, never cut to fit; a smaller one may still
+      if (spent + size > budget) continue
+      spent += size
+      fitted.add(r.id)
     }
-    spent += size
-    fitted.add(r.id)
   }
+  fill(kept, CONTEXT_BUDGET * share)
+  fill(used.filter((x) => !inputs.has(String(x.shape))), CONTEXT_BUDGET)
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
   const omitted = used.length - seen.length
   // A whole row the budget left out is named, not only counted: it is one the owner asked to be shown whole (a file the
@@ -272,10 +283,14 @@ const make = async (p: Ask): Promise<Response> => {
   if (unequal.length > 0) {
     return refusedBySchema(unequal.join("; ").slice(0, 1000))
   }
+  const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
   const row = {
     ...body,
     shape: p.shape,
     input_refs: cited,
+    // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one
+    // it ignored.
+    ...(omitted > 0 ? { context_omitted: omitted, ...(shownSeqs.length > 0 ? { oldest_shown_seq: Math.min(...shownSeqs) } : {}) } : {}),
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),

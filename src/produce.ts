@@ -45,7 +45,18 @@ const clip = (r: Row, max: number): Row => {
   return whole.length <= max ? r : ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, max) } as Row)
 }
 
-export const fail = (status: number, body: string): Response => Response.json({ failure: { status, body } }, { status })
+export const fail = (status: number, body: string, unserved?: string): Response =>
+  Response.json({ failure: { status, body, ...(unserved !== undefined ? { unserved } : {}) } }, { status })
+// What a call this producer made says when it never reached a producer: discovery's own answer for a shape no one serves,
+// or a resolver's refusal for a model it could not serve now, both carry `unserved` (the shape). Read as a field, never
+// from words; carried on the failure so the walk can tell "nothing was there" from "the answer was wrong".
+export const unservedOf = (answer: unknown): string | undefined => {
+  const a = typeof answer === "string" ? ((): unknown => { try { return JSON.parse(answer) } catch { return undefined } })() : answer
+  if (typeof a !== "object" || a === null) return undefined
+  const top = (a as { unserved?: unknown }).unserved
+  const inner = (a as { content?: { unserved?: unknown } }).content?.unserved
+  return typeof top === "string" && top !== "" ? top : typeof inner === "string" && inner !== "" ? inner : undefined
+}
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
 const refusedBySchema = (body: string): Response =>
@@ -83,7 +94,7 @@ export const records = async (shape: string, pointer: object): Promise<Answer> =
 const make = async (p: Ask): Promise<Response> => {
   const sch = await records(RECORD_READ, { shape: SHAPE_SCHEMA, where: { target: p.shape } })
   if (!sch.ok) {
-    return fail(sch.status, sch.text)
+    return fail(sch.status, sch.text, unservedOf(sch.text))
   }
   // The newest row of the variant asked for (another way the owner makes the same shape, from other inputs); a row
   // naming no variant, and an ask naming none, are the variant "".
@@ -94,7 +105,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const chs = await records(RECORD_READ, { shape: CHANNEL, ids: [p.via_ref] })
   if (!chs.ok) {
-    return fail(chs.status, chs.text)
+    return fail(chs.status, chs.text, unservedOf(chs.text))
   }
   const [channel] = chs.body as Row[]
   // A call that names no channel (a template replaying a stored row as its pointer) is refused by name, not a crash.
@@ -103,7 +114,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const ins = await records(RECORD_READ, { ids: p.input_refs })
   if (!ins.ok) {
-    return fail(ins.status, ins.text)
+    return fail(ins.status, ins.text, unservedOf(ins.text))
   }
   if (!Array.isArray(schema.inputs)) {
     return fail(422, SHAPE_SCHEMA)
@@ -160,7 +171,7 @@ const make = async (p: Ask): Promise<Response> => {
   for (const pointer of [schema.reads ?? []].flat() as object[]) {
     const r = await resolve(bound(pointer))
     if (!r.ok) {
-      return fail(r.status, r.text)
+      return fail(r.status, r.text, unservedOf(r.text))
     }
     looked.push(r.body)
     answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
@@ -227,13 +238,13 @@ const make = async (p: Ask): Promise<Response> => {
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })
     if (!r.ok) {
-      return fail(r.status, r.text)
+      return fail(r.status, r.text, unservedOf(r.text))
     }
     const result = r.body as Record<string, unknown>
     // A channel that answers without its output field failed upstream (a provider error comes back as
     // {resolved: false, error}); say what it returned instead of parsing the word "undefined".
     if (typeof result?.[c.output_field] !== "string") {
-      return fail(502, JSON.stringify({ channel: c.pointer.type, missing: c.output_field, result }).slice(0, 1000))
+      return fail(502, JSON.stringify({ channel: c.pointer.type, missing: c.output_field, result }).slice(0, 1000), unservedOf(result))
     }
     text = String(result[c.output_field])
     last = { result, field: c.producer_field }
@@ -299,7 +310,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const w = await records(RECORD_WRITE, { row, writer: VESSEL_ID, role: DESCRIBED })
   if (!w.ok) {
-    return fail(w.status, w.text)
+    return fail(w.status, w.text, unservedOf(w.text))
   }
   return Response.json(w.body)
 }

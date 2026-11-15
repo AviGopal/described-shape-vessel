@@ -42,6 +42,8 @@ let moreSchemas: Array<Record<string, unknown>> = []
 
 let llmContent = JSON.stringify({ text: "hi" })
 let llmFailure: Record<string, unknown> | null = null
+// discovery's own answer when no producer serves the model's shape (it never reached a resolver)
+let llmUnrouted = false
 let readsDown = false
 let discovery: Fake
 let identity: Fake
@@ -58,6 +60,7 @@ const resolve = (p: Record<string, any>): Response => {
     ? Response.json({ error: "down" }, { status: 503 })
     : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" } } })
   if (p.type === "record_lapsed") return Response.json(LAPSED.filter((r) => !Array.isArray(p.asks) || r.input_refs.some((id) => p.asks.includes(id))))
+  if (p.type === "llm_completion" && llmUnrouted) return Response.json({ error: "Not found", shape: "llm_completion", unserved: "llm_completion" }, { status: 404 })
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
   if (p.type === "record_write") return Response.json({ ...p.row, id: "row-1", writer: p.writer, role: p.role })
   return Response.json({ error: "Not found" }, { status: 404 })
@@ -727,5 +730,23 @@ describe("described-shape vessel", () => {
     expect(code).toBe(1)
     expect(stderr).toContain("missing env IDENTITY_VESSEL_URL")
     expect(stderr).not.toContain(NODE_KEY)
+  })
+
+  test("[MUST-FAIL] a model call that never reached a producer says so on the failure (unserved), as a field", async () => {
+    llmUnrouted = true
+    const routed = await produce(NODE_KEY)
+    llmUnrouted = false
+    expect(routed.status).toBe(404)
+    expect(routed.body.failure).toMatchObject({ status: 404, unserved: "llm_completion" })
+    llmFailure = { resolved: false, shape: "llmCompletion", unserved: "llm_completion", requested_model: "model-asked", error: "cooling" }
+    const cooled = await produce(NODE_KEY)
+    llmFailure = { resolved: false, error: "provider refused the request" }
+    const refused = await produce(NODE_KEY)
+    llmFailure = null
+    expect(cooled.status).toBe(502)
+    expect(cooled.body.failure).toMatchObject({ status: 502, unserved: "llm_completion" })
+    // a resolver that was reached and failed is not unserved
+    expect(refused.status).toBe(502)
+    expect(refused.body.failure.unserved).toBeUndefined()
   })
 })

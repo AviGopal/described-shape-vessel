@@ -259,6 +259,21 @@ describe("described-shape vessel", () => {
     expect(r.prompt).toContain("NEWEST_REFUSAL_REASON")
   })
 
+  test("[MUST-FAIL] the omission count on the row is the vessel's, never what the model wrote", async () => {
+    const keep = llmContent
+    llmContent = JSON.stringify({ text: "hi", context_omitted: 0, oldest_shown_seq: 1 })
+    const big = await keepRun({ keep: true, share: 0.25 }) // rows were left out: the model's 0 is not stored
+    llmContent = JSON.stringify({ text: "hi", context_omitted: 42, oldest_shown_seq: 7 })
+    const before = discovery.seen.length
+    await produce(NODE_KEY) // nothing left out: the model's 42 is not stored
+    llmContent = keep
+    const small = (discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    expect(big.row.context_omitted).toBeGreaterThan(0)
+    expect(big.row.oldest_shown_seq).not.toBe(1)
+    expect(small.context_omitted).toBe(0)
+    expect(small.oldest_shown_seq).not.toBe(7)
+  })
+
   test("[MUST-FAIL] one row too big for what is left is skipped, and older small rows still fill the budget", async () => {
     const ctx = (SCHEMA as any).context
     ;(SCHEMA as any).context = ["hop"]

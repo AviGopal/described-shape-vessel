@@ -284,13 +284,15 @@ const make = async (p: Ask): Promise<Response> => {
     return refusedBySchema(unequal.join("; ").slice(0, 1000))
   }
   const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
+  // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one it
+  // ignored. Always this vessel's count, never the model's: the same fields in what the model wrote are dropped.
+  const { context_omitted: _o, oldest_shown_seq: _s, ...said } = body as Record<string, unknown>
   const row = {
-    ...body,
+    ...said,
     shape: p.shape,
     input_refs: cited,
-    // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one
-    // it ignored.
-    ...(omitted > 0 ? { context_omitted: omitted, ...(shownSeqs.length > 0 ? { oldest_shown_seq: Math.min(...shownSeqs) } : {}) } : {}),
+    context_omitted: omitted,
+    ...(shownSeqs.length > 0 ? { oldest_shown_seq: Math.min(...shownSeqs) } : {}),
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),

@@ -745,6 +745,10 @@ describe("described-shape vessel", () => {
     llmFailure = null
     expect(cooled.status).toBe(502)
     expect(cooled.body.failure).toMatchObject({ status: 502, unserved: "llm_completion" })
+    // the same refusal forwarded from a peer comes back in a content envelope: read there too
+    llmFailure = { content: { resolved: false, unserved: "llm_completion", error: "cooling" }, metadata: {} }
+    const forwarded = await produce(NODE_KEY)
+    expect(forwarded.body.failure).toMatchObject({ status: 502, unserved: "llm_completion" })
     // a resolver that was reached and failed is not unserved
     expect(refused.status).toBe(502)
     expect(refused.body.failure.unserved).toBeUndefined()

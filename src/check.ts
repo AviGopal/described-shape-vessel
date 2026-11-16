@@ -44,9 +44,10 @@ export const shownIn = (schema: unknown, body: unknown, ids: Set<string>, at = "
   return bad
 }
 
-// A schema property may say its value must be ONE OF what the rows of a shape the producer was shown hold at a path:
-// "x-in": {"shape": <shape>, "path": <dotted path>}. A list the owner keeps as rows (the names a retrospective may give a
-// cause) is then read at use time, never written into the schema. With no shown row of the shape, nothing is allowed.
+// A schema property may say its value must be ONE OF what the rows of a shape hold at a path, among the rows the
+// owner's marked reads returned (produce.ts): "x-in": {"shape": <shape>, "path": <dotted path>}. A list the owner keeps as
+// rows (the names a retrospective may give a cause) is then read at use time, never written into the schema. With no
+// such row of the shape, nothing is allowed. The match is exact.
 type InIn = { shape: string; path: string }
 export const inIn = (schema: unknown, body: unknown, rows: Array<Record<string, unknown>>, at = ""): string[] => {
   if (typeof schema !== "object" || schema === null) return []

@@ -764,11 +764,20 @@ describe("described-shape vessel", () => {
     const unlisted = await run("made_up", true)
     const none = await run(null, true)
     const unmarked = await run("not_shown", false) // the same rows, read without the owner's mark: not shown, nothing allowed
+    // a cause_class row anyone wrote, GIVEN as an input: it does not widen the list (only the owner's marked reads do)
+    INPUTS.push({ shape: "cause_class", id: "cc-given", seq: 3, role: "described", name: "invented_here" } as any)
+    ;(SCHEMA as any).reads = [{ type: "record_read", ids: ["cc1", "cc2"], shown: true }]
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = ["hop", "cause_class"] // the producer is shown the given row, so it is among the rows seen
+    llmContent = JSON.stringify({ text: "t", class: "invented_here" })
+    const given = (await produce(NODE_KEY, { input_refs: ["w1", "cc-given"] })).status
+    ;(SCHEMA as any).context = ctx
+    INPUTS.splice(INPUTS.length - 1, 1)
     INPUTS.splice(INPUTS.length - causes.length, causes.length)
     delete (SCHEMA as any).reads
     ;(SCHEMA as any).schema = schema
     llmContent = content
-    expect([listed, unlisted, none, unmarked]).toEqual([200, 422, 200, 422])
+    expect([listed, unlisted, none, unmarked, given]).toEqual([200, 422, 200, 422, 422])
   })
 
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {

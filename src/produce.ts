@@ -353,9 +353,11 @@ const make = async (p: Ask): Promise<Response> => {
   if (unequal.length > 0) {
     return refusedBySchema(unequal.join("; ").slice(0, 1000))
   }
-  // And a value it says must be one of what shown rows hold (x-in) must be one of them: the rows given and the rows a
-  // read showed it.
-  const outside_ = inIn(schema.schema, body, [...seen, ...read])
+  // And a value it says must be one of what shown rows hold (x-in) must be one of them, read from the owner's marked
+  // reads only: the owner chose that source (and, in the read's where, whose rows count). A row of the shape given as an
+  // input, or read without the mark, could have been written by anyone and would widen the list (qa).
+  const marked = ownerShown.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string") : [])
+  const outside_ = inIn(schema.schema, body, marked)
   if (outside_.length > 0) {
     return refusedBySchema(outside_.join("; ").slice(0, 1000))
   }

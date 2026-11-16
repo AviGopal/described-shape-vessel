@@ -747,6 +747,30 @@ describe("described-shape vessel", () => {
     expect(truth.status).toBe(200)
   })
 
+  test("[MUST-FAIL] a value the schema says is one of what shown rows hold (x-in) must be one of them; read through an owner-marked read", async () => {
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["text", "class"],
+      properties: { text: { type: "string" }, class: { type: ["string", "null"], "x-in": { shape: "cause_class", path: "name" } } },
+    }
+    const causes = [{ shape: "cause_class", id: "cc1", seq: 1, role: "owner", name: "not_shown" }, { shape: "cause_class", id: "cc2", seq: 2, role: "detector", name: "stale_base" }]
+    INPUTS.push(...(causes as any))
+    const run = async (cls: string | null, shown: boolean) => {
+      ;(SCHEMA as any).reads = [{ type: "record_read", ids: ["cc1", "cc2"], ...(shown ? { shown: true } : {}) }]
+      llmContent = JSON.stringify({ text: "t", class: cls })
+      return (await produce(NODE_KEY)).status
+    }
+    const listed = await run("stale_base", true)
+    const unlisted = await run("made_up", true)
+    const none = await run(null, true)
+    const unmarked = await run("not_shown", false) // the same rows, read without the owner's mark: not shown, nothing allowed
+    INPUTS.splice(INPUTS.length - causes.length, causes.length)
+    delete (SCHEMA as any).reads
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect([listed, unlisted, none, unmarked]).toEqual([200, 422, 200, 422])
+  })
+
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
     const context = SCHEMA.context
     ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true, latest_by: "path" }]

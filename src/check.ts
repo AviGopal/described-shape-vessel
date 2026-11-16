@@ -44,6 +44,30 @@ export const shownIn = (schema: unknown, body: unknown, ids: Set<string>, at = "
   return bad
 }
 
+// A schema property may say its value must be ONE OF what the rows of a shape the producer was shown hold at a path:
+// "x-in": {"shape": <shape>, "path": <dotted path>}. A list the owner keeps as rows (the names a retrospective may give a
+// cause) is then read at use time, never written into the schema. With no shown row of the shape, nothing is allowed.
+type InIn = { shape: string; path: string }
+export const inIn = (schema: unknown, body: unknown, rows: Array<Record<string, unknown>>, at = ""): string[] => {
+  if (typeof schema !== "object" || schema === null) return []
+  const s = schema as { "x-in"?: InIn; properties?: Record<string, unknown>; items?: unknown }
+  const bad: string[] = []
+  const rule = s["x-in"]
+  if (rule && body !== null && body !== undefined) {
+    const held = new Set(rows.filter((r) => String(r.shape) === String(rule.shape)).map((r) => JSON.stringify(at_(r, rule.path))))
+    if (!held.has(JSON.stringify(body))) {
+      bad.push(`${at || "/"} ${JSON.stringify(body)} is not one of what the ${rule.shape} rows shown hold at ${rule.path} (${[...held].join(" | ") || "none shown"})`)
+    }
+  }
+  if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
+    for (const [k, sub] of Object.entries(s.properties)) {
+      if (k in body) bad.push(...inIn(sub, (body as Record<string, unknown>)[k], rows, `${at}/${k}`))
+    }
+  }
+  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...inIn(s.items, v, rows, `${at}/${i}`)))
+  return bad
+}
+
 // A schema property may say its value must be what a row the producer was shown holds:
 // "x-equals": {"shape": <the shown rows' shape>, "path": <the dotted path in those rows>}. A grader then cannot state a
 // fact about its inputs (whether a check ran, say) that the input does not hold. With no shown row of the shape, or

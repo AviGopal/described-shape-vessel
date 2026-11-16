@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, matches, shapeIn, shownIn } from "./check"
+import { check, equalsIn, inIn, matches, shapeIn, shownIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_SCHEMA } from "./shapes"
@@ -352,6 +352,12 @@ const make = async (p: Ask): Promise<Response> => {
   const unequal = equalsIn(schema.schema, body, seen)
   if (unequal.length > 0) {
     return refusedBySchema(unequal.join("; ").slice(0, 1000))
+  }
+  // And a value it says must be one of what shown rows hold (x-in) must be one of them: the rows given and the rows a
+  // read showed it.
+  const outside_ = inIn(schema.schema, body, [...seen, ...read])
+  if (outside_.length > 0) {
+    return refusedBySchema(outside_.join("; ").slice(0, 1000))
   }
   const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
   // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one it

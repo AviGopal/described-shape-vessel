@@ -190,7 +190,13 @@ const make = async (p: Ask): Promise<Response> => {
     }
     return Object.fromEntries(out)
   }
-  for (const pointer of [schema.reads ?? []].flat() as object[]) {
+  // A read the owner marks shown (shown: true, taken off before it is sent): its rows count as shown, and are cited,
+  // whatever they cite. Without it a read row counts only when it cites an input row (below), which keeps a grader of one
+  // request from citing another's rows; a producer whose work is to look across requests (a retrospective, the USER:
+  // "on this one horizon") is given that by the owner, per read.
+  const ownerShown: unknown[] = []
+  for (const marked of [schema.reads ?? []].flat() as object[]) {
+    const { shown: mark, ...pointer } = marked as Record<string, unknown>
     const p = await bound(pointer)
     if ("unbound" in p) return fail(502, String(p.unbound))
     const r = await resolve(p)
@@ -198,6 +204,7 @@ const make = async (p: Ask): Promise<Response> => {
       return fail(r.status, r.text, unservedOf(r.text))
     }
     looked.push(r.body)
+    if (mark === true) ownerShown.push(r.body)
     answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
   }
   // A row the schema shows only as context is cut past a size and marked as cut, so one oversized row (a tool's whole
@@ -277,7 +284,8 @@ const make = async (p: Ask): Promise<Response> => {
   // inputs, so a grade judging it names a row it was given; one that does not (another request's deadline, a gap) is
   // not, so nothing may be judged from it.
   const ofInputs = (x: Row): boolean => [x.input_refs].flat().some((id) => inputIds.includes(String(id)))
-  const read = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string" && ofInputs(x)) : [])
+  const read = looked.flatMap((a) => Array.isArray(a)
+    ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string" && (ofInputs(x) || ownerShown.includes(a))) : [])
   const cited = [...new Set([...seen, ...read].map((r) => r.id))]
   const shown = seen.map(shownAs)
   let text = JSON.stringify({

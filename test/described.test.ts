@@ -527,6 +527,28 @@ describe("described-shape vessel", () => {
     expect(after - before).toBe(1) // the refused answer wrote nothing
   })
 
+  test("[MUST-FAIL] a read the owner marks shown: its rows count as shown and are cited, whatever they cite; the mark is not sent; an invented id is still refused", async () => {
+    const keep = (SCHEMA as any).schema
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer", shown: true }]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["evidence_refs"],
+      properties: { evidence_refs: { type: "array", items: { type: "string", "x-shown": true } } },
+    }
+    const before = discovery.seen.length
+    llmContent = JSON.stringify({ evidence_refs: ["d9"] }) // another request's deadline: citable only because the owner marked the read
+    const across = await produce(NODE_KEY)
+    const calls = discovery.seen.slice(before)
+    const sent = calls.map((c) => (c.body as any)?.pointer).find((p) => p?.type === "record_lapsed")
+    const row = calls.map((c) => (c.body as any)?.pointer).filter((p) => p?.type === "record_write").at(-1)?.row
+    llmContent = JSON.stringify({ evidence_refs: ["zz-invented"] })
+    const invented = await produce(NODE_KEY)
+    ;(SCHEMA as any).schema = keep
+    delete (SCHEMA as any).reads
+    llmContent = JSON.stringify({ text: "hi" })
+    expect([across.status, "shown" in (sent ?? {}), (row?.input_refs as string[]).includes("d9")]).toEqual([200, false, true])
+    expect([invented.status, String(invented.body.failure?.body).includes('"zz-invented" is not a row it was shown')]).toEqual([422, true])
+  })
+
   test("[MUST-FAIL] a row the walk's record of a call carried whole may be cited, as records holds it; input_refs stay what was given", async () => {
     const keep = (SCHEMA as any).schema
     ;(SCHEMA as any).schema = {

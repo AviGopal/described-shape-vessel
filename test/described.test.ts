@@ -748,9 +748,66 @@ describe("described-shape vessel", () => {
     // the same refusal forwarded from a peer comes back in a content envelope: read there too
     llmFailure = { content: { resolved: false, unserved: "llm_completion", error: "cooling" }, metadata: {} }
     const forwarded = await produce(NODE_KEY)
+    llmFailure = null // later tests call the model: never leave a failure set
     expect(forwarded.body.failure).toMatchObject({ status: 502, unserved: "llm_completion" })
     // a resolver that was reached and failed is not unserved
     expect(refused.status).toBe(502)
     expect(refused.body.failure.unserved).toBeUndefined()
+  })
+
+  // d929 (qa, database): request_acts is one row per act, each restating every act so far. Kept without latest_by, 76 of
+  // them filled the keep share before the request's clone and commit rows could fit, and the producer asked for a new
+  // clone. The seed's entries (walk-owner-seed.ts, request schema): only the newest request_acts row is kept.
+  const actsRun = async (actsEntry: Record<string, unknown>) => {
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = ["hop", { shape: "gitWorktree", latest_by: "repo", keep: true },
+      { shape: "gitCommitResult", latest_by: "shape", keep: true }, actsEntry]
+    ;(SCHEMA as any).keep_share = 0.25
+    const clone = { shape: "gitWorktree", id: "gw-d", seq: 10, repo: "hsv", cwd: "/trees/D929_CLONE", input_refs: ["w1"] }
+    const commit = { shape: "gitCommitResult", id: "gc-d", seq: 11, sha: "COMMIT_2C73FC3", tree: "t1", input_refs: ["w1"] }
+    const acts = Array.from({ length: 76 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 20 + i, input_refs: ["w1"],
+      acts: Array.from({ length: i + 1 }, (_, j) => `act-${j} ` + "a".repeat(90)) }))
+    const rows = [clone, commit, ...acts]
+    INPUTS.push(...(rows as any))
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = ctx
+    delete (SCHEMA as any).keep_share
+    const calls = discovery.seen.slice(before)
+    return { status: r.status, prompt: String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "") }
+  }
+
+  test("[MUST-FAIL] with request_acts kept newest-only (the seed's entry), the request's clone and commit are shown past 76 growing acts rows", async () => {
+    const r = await actsRun({ shape: "request_acts", latest_by: "shape", keep: true })
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("/trees/D929_CLONE")
+    expect(r.prompt).toContain("COMMIT_2C73FC3")
+    expect(r.prompt).toContain("act-75 ") // the newest acts row is still shown
+  })
+
+  test("control: request_acts kept without latest_by (the parent seed's entry) leaves the clone out, as on d929", async () => {
+    const r = await actsRun({ shape: "request_acts", keep: true })
+    expect(r.prompt).not.toContain("/trees/D929_CLONE")
+  })
+
+  test("[MUST-FAIL] a file read whole is shown whole in place of its cut hop (the seed's answer entry)", async () => {
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = [{ shape: "hop", join: { on: "call_id", take: ["pointer_type"] } },
+      { shape: "fileContent", whole: true, latest_by: "path", covers: { shape: "hop", on: "call_id" } }]
+    const body = "BEGIN_OF_FILE " + "r".repeat(43_000) + " END_OF_FILE"
+    const hop = { shape: "hop", id: "h-read", seq: 30, call_id: "c-read", phase: "ended", output: { cut: true, bytes: 43_100, start: body.slice(0, 16_000) } }
+    const file = { shape: "fileContent", id: "fc-read", seq: 31, call_id: "c-read", path: "ui/src/Reports.tsx", content: body, input_refs: ["w1"] }
+    INPUTS.push(hop as any, file as any)
+    const before = discovery.seen.length
+    await produce(NODE_KEY, { input_refs: ["w1", "h-read", "fc-read"] })
+    INPUTS.splice(INPUTS.length - 2, 2)
+    ;(SCHEMA as any).context = ctx
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    expect(prompt).toContain("END_OF_FILE")
+    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    expect(row.input_refs).toContain("fc-read")
+    expect(row.input_refs).not.toContain("h-read")
   })
 })

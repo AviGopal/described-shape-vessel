@@ -137,8 +137,40 @@ const make = async (p: Ask): Promise<Response> => {
   // what a tool call returned without the walk's own steps. join {on, take} copies the fields take names onto a shown
   // row from another row of its shape with the same value at on (an ended hop names no shape called; its started hop
   // does); that other row is neither shown nor cited.
-  const wanted = [schema.inputs, schema.context ?? []].flat()
   const all = ins.body as Row[]
+  // THE CLONE'S NEWEST TREE (x-latest), read as the walk reads it: a where value {"x-latest": {shapes, moves, same,
+  // field}} is the field of the newest row of those shapes the walk recorded from a tool's answer (role walk, with a
+  // call_id) on the clone (the same `same` as the newest such row of a `moves` shape among the rows given: the walk gives
+  // this request's own), that holds the field; a newer `moves` row without it leaves it unknown, and an unknown value
+  // matches no row. Resolved once, before any entry is matched; with no such value, every entry is as it was.
+  const latestOf = (v: unknown): { value: unknown } | undefined => {
+    const s = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as { "x-latest"?: unknown })["x-latest"] : undefined
+    if (typeof s !== "object" || s === null) return undefined
+    const o = s as Record<string, unknown>
+    const list = (x: unknown): string[] => Array.isArray(x) ? x.filter((y): y is string => typeof y === "string") : []
+    const [shapes, moves] = [list(o.shapes), list(o.moves)]
+    if (typeof o.same !== "string" || typeof o.field !== "string" || shapes.length === 0) return { value: undefined }
+    const [same, field] = [o.same, o.field]
+    const byTool = all.filter((r) => r.role === "walk" && typeof r.call_id === "string").sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0))
+    const at = byTool.find((r) => moves.includes(String(r.shape)) && r[same] !== undefined)?.[same]
+    if (at === undefined) return { value: undefined }
+    for (const r of byTool.filter((x) => shapes.includes(String(x.shape)) && JSON.stringify(x[same]) === JSON.stringify(at))) {
+      if (r[field] !== undefined) return { value: r[field] }
+      if (moves.includes(String(r.shape))) break
+    }
+    return { value: undefined }
+  }
+  const resolve_ = (e: unknown): unknown => {
+    if (typeof e !== "object" || e === null || Array.isArray(e)) return e
+    const where = (e as { where?: unknown }).where
+    if (typeof where !== "object" || where === null) return e
+    const w = Object.fromEntries(Object.entries(where as Record<string, unknown>).map(([k, v]) => {
+      const l = latestOf(v)
+      return [k, l === undefined ? v : l.value === undefined ? v : l.value]
+    }))
+    return { ...(e as object), where: w }
+  }
+  const wanted = [schema.inputs, schema.context ?? []].flat().map(resolve_)
   let used = all.flatMap((r) => {
     const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
     if (e === undefined) return []
@@ -255,8 +287,11 @@ const make = async (p: Ask): Promise<Response> => {
   const reqs = [...reqRows.filter((r) => r.role === OWNER).sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))
     .reduce((m, r) => m.set(JSON.stringify([String(r.for), String(r.needs)]), r), new Map<string, Row>()).values()]
   const meets = (r: Row, q: Row): boolean => String(r.shape) === String(q.needs) &&
-    Object.entries((q.where ?? {}) as Record<string, unknown>).every(([k, v]) =>
-      typeof v === "object" && v !== null && !Array.isArray(v) ? true : Array.isArray(v) ? v.includes(r[k]) : r[k] === v)
+    Object.entries((q.where ?? {}) as Record<string, unknown>).every(([k, v]) => {
+      const l = latestOf(v)
+      if (l !== undefined) return l.value !== undefined && JSON.stringify(r[k]) === JSON.stringify(l.value)
+      return typeof v === "object" && v !== null && !Array.isArray(v) ? true : Array.isArray(v) ? v.includes(r[k]) : r[k] === v
+    })
   const required: Row[] = []
   for (const q of reqs) {
     const newestOf = new Map<string, Row>()

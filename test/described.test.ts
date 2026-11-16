@@ -842,6 +842,37 @@ describe("described-shape vessel", () => {
     expect([listed, unlisted, none, unmarked, given, readUnmarked]).toEqual([200, 422, 200, 422, 422, 422])
   })
 
+  test("[MUST-FAIL] an input bound to the clone's newest tree (x-latest) is a diff of that tree only: never an older one, never a model's row", async () => {
+    const inputs = SCHEMA.inputs
+    const XL = { "x-latest": { shapes: ["gitCommitResult", "gitWorktree", "gitDiff"], moves: ["gitCommitResult", "gitWorktree"], same: "cwd", field: "tree" } }
+    // the owner's entry: a diff a tool recorded (role walk), of the clone's newest tree
+    ;(SCHEMA as any).inputs = ["world_changed", { shape: "gitDiff", latest_by: "shape", where: { tree: XL, role: "walk" } }]
+    const tool = (id: string, seq: number, shape: string, tree?: string, extra: Record<string, unknown> = {}) =>
+      ({ shape, id, seq, role: "walk", call_id: `c-${id}`, cwd: "/c", ...(tree ? { tree } : {}), ...extra })
+    const rows = [
+      tool("wt", 10, "gitWorktree"),
+      tool("k1", 11, "gitCommitResult", "TREE_ONE"),
+      tool("dA", 12, "gitDiff", "TREE_ONE", { diff: "DIFF_OF_ONE" }),
+      tool("k2", 13, "gitCommitResult", "TREE_TWO"),
+      tool("dB", 14, "gitDiff", "TREE_TWO", { diff: "DIFF_OF_TWO" }),
+      tool("k3", 15, "gitCommitResult", "TREE_THREE"),
+      { shape: "gitDiff", id: "dM", seq: 16, role: "described", cwd: "/c", tree: "TREE_THREE", diff: "DIFF_BY_A_MODEL" },
+      { shape: "gitCommitResult", id: "kM", seq: 17, role: "described", cwd: "/c", tree: "TREE_NINE" }, // a model's row naming a tree
+      tool("wt2", 18, "gitWorktree"), // a move that does not say its tree
+    ]
+    INPUTS.push(...(rows as any))
+    const at = async (ids: string[]) => (await askWith(["w1", ...ids])).prompt
+    const newest = await at(["wt", "k1", "dA", "k2", "dB"]) // the clone is at TREE_TWO: its diff is the input
+    const moved = await at(["wt", "k1", "dA", "k2", "dB", "k3", "dM"]) // a commit since: no diff of TREE_THREE by a tool (a model's names it)
+    const modelRow = await at(["wt", "k1", "dA", "k2", "dB", "kM"]) // a model's newer tree moves nothing: still TREE_TWO
+    const unknown = await at(["wt", "k1", "dA", "k2", "dB", "wt2"]) // the clone moved without its tree: no diff is of it
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).inputs = inputs
+    expect([newest.includes("DIFF_OF_TWO"), newest.includes("DIFF_OF_ONE")]).toEqual([true, false])
+    expect([moved.includes("DIFF_OF_TWO"), moved.includes("DIFF_BY_A_MODEL"), moved.includes("DIFF_OF_ONE")]).toEqual([false, false, false])
+    expect([modelRow.includes("DIFF_OF_TWO"), unknown.includes("DIFF_OF_TWO")]).toEqual([true, false])
+  })
+
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {
     const context = SCHEMA.context
     ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true, latest_by: "path" }]

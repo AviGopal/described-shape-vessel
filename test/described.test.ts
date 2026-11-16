@@ -276,6 +276,25 @@ describe("described-shape vessel", () => {
     }
   })
 
+  test("[MUST-FAIL] a row a shown refusal names is shown with it, ahead of older rows; without the name, it is left to the budget (90b4ece3)", async () => {
+    // an old verdict the budget would drop behind 80 newer hops, and the walk's skip naming it (against_refs)
+    const verdict = { shape: "land_verdict", id: "lv-old", seq: 60, r: 0, tree: "t-old", input_refs: ["w1"], note: "OLD_VERDICT " + "v".repeat(2000) }
+    const skip = { shape: "failure", id: "sk-n", seq: 190, kind: "skip", unserved: ["git_land (requires land_verdict; r: required 1 ≠ land_verdict's 0)"], against_refs: ["lv-old"], input_refs: ["w1"] }
+    const more = [{ shape: "land_verdict" }]
+    const named = await reqRun({ reqs: [], extra: [verdict, skip], more })
+    expect([named.prompt.includes("OLD_VERDICT"), (named.row.input_refs as string[]).includes("lv-old"), named.prompt.includes("rstep-79.")]).toEqual([true, true, true])
+    // the same rows, the skip naming nothing: as before, the old verdict is left to the budget (not shown)
+    const unnamed = await reqRun({ reqs: [], extra: [verdict, { ...skip, against_refs: undefined }], more })
+    expect([unnamed.prompt.includes("OLD_VERDICT"), (unnamed.row.input_refs as string[]).includes("lv-old")]).toEqual([false, false])
+    // named rows that do not all fit (30 of ~8 KB each, cut, past the 192 KB budget) are each either shown and cited or
+    // said by id; none is dropped in silence
+    const many = Array.from({ length: 30 }, (_, i) => ({ ...verdict, id: `lv-${i}`, seq: 61 + i, note: `OLD_VERDICT_${i} ` + "v".repeat(9000) }))
+    const big = await reqRun({ reqs: [], extra: [...many, { ...skip, against_refs: many.map((v) => v.id) }], more })
+    const said = (big.prompt.match(/rows a shown refusal names that did not fit: ([^"]*)/)?.[1] ?? "").split(", ").filter(Boolean)
+    const cited = new Set(big.row.input_refs as string[])
+    expect([said.length > 0, many.filter((v) => !cited.has(v.id) && !said.includes(v.id)).map((v) => v.id), said.filter((id) => cited.has(id))]).toEqual([true, [], []])
+  })
+
   test("[MUST-FAIL] required reads that fill a share never push out the kept rows: the request's clone is still shown beside them", async () => {
     // two more reads of other files, so the required rows alone (~66 KB) are more than the keep share (48 KB)
     const reads = ["A", "B"].map((x, i) => ({ shape: "fileContent", id: `fc-${x}`, seq: 55 + i, path: `/trees/c2/src/${x}.ts`, input_refs: ["w1"], content: `READ_${x} ` + "r".repeat(22000) }))

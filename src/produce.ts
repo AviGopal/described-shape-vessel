@@ -269,6 +269,17 @@ const make = async (p: Ask): Promise<Response> => {
   // file reads never push out the request's clone or its commit (qa: one shared share starved the kept rows)
   fill(kept, CONTEXT_BUDGET * share)
   fill(required, spent + CONTEXT_BUDGET * share)
+  // WHAT A SHOWN REFUSAL NAMES COMES WITH IT. A row naming the rows its reasons compared (against_refs: the walk's skip
+  // saying a requirement was not met, and by which row) is fitted next, and then those rows, ahead of the walk's older
+  // rows: a producer told "r: required 1 ≠ land_verdict's 0" was shown neither the verdict nor its diff, and asked for a
+  // read instead (90b4ece3, research). The newest five such rows at most; only a row that is itself fitted pulls its rows
+  // in, and only the rows it names; a
+  // named row that does not fit is said, by id, not dropped in silence. No shape is named here.
+  const naming = newestFirst(used.filter((r) => !inputs.has(String(r.shape)) && Array.isArray(r.against_refs) && r.against_refs.length > 0)).slice(0, 5)
+  fill(naming, CONTEXT_BUDGET)
+  const named = new Set(naming.filter((r) => fitted.has(r.id)).flatMap((r) => (r.against_refs as unknown[]).map(String)))
+  fill(used.filter((r) => named.has(r.id) && !inputs.has(String(r.shape))), CONTEXT_BUDGET)
+  const namedNotShown = [...named].filter((id) => used.some((r) => r.id === id) && !fitted.has(id)).slice(0, 20)
   fill(used.filter((x) => !inputs.has(String(x.shape))), CONTEXT_BUDGET)
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
   const omitted = used.length - seen.length
@@ -291,6 +302,7 @@ const make = async (p: Ask): Promise<Response> => {
   let text = JSON.stringify({
     description: schema.description, schema: schema.schema, inputs: shown, reads: looked,
     ...(omitted > 0 ? { omitted: `${omitted} older context rows are not shown` } : {}),
+    ...(namedNotShown.length > 0 ? { named_not_shown: `rows a shown refusal names that did not fit: ${namedNotShown.join(", ")}` } : {}),
     ...(notShownWhole.length > 0 ? { not_shown_whole: notShownWhole } : {}),
   })
   let last = { result: {} as Record<string, unknown>, field: "" }

@@ -828,11 +828,18 @@ describe("described-shape vessel", () => {
     const given = (await produce(NODE_KEY, { input_refs: ["w1", "cc-given"] })).status
     ;(SCHEMA as any).context = ctx
     INPUTS.splice(INPUTS.length - 1, 1)
+    // a cause_class row anyone wrote, answered by a read WITHOUT the owner's mark and citing this request's input (so it
+    // is among the rows the reads showed): it does not widen the list either (qa)
+    INPUTS.push({ shape: "cause_class", id: "cc-read", seq: 4, role: "described", name: "from_unmarked_read", input_refs: ["w1"] } as any)
+    ;(SCHEMA as any).reads = [{ type: "record_read", ids: ["cc1", "cc2"], shown: true }, { type: "record_read", ids: ["cc-read"] }]
+    llmContent = JSON.stringify({ text: "t", class: "from_unmarked_read" })
+    const readUnmarked = (await produce(NODE_KEY)).status
+    INPUTS.splice(INPUTS.length - 1, 1)
     INPUTS.splice(INPUTS.length - causes.length, causes.length)
     delete (SCHEMA as any).reads
     ;(SCHEMA as any).schema = schema
     llmContent = content
-    expect([listed, unlisted, none, unmarked, given]).toEqual([200, 422, 200, 422, 422])
+    expect([listed, unlisted, none, unmarked, given, readUnmarked]).toEqual([200, 422, 200, 422, 422, 422])
   })
 
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {

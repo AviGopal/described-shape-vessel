@@ -59,8 +59,21 @@ export const unservedOf = (answer: unknown): string | undefined => {
 }
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
-const refusedBySchema = (body: string): Response =>
-  Response.json({ failure: { status: 422, body, refused: "schema" } }, { status: 422 })
+const refusedBySchema = (body: string, end: Ending = {}): Response =>
+  Response.json({ failure: { status: 422, body, refused: "schema", ...end } }, { status: 422 })
+// How the model's answer ended, as the resolver that answered says it (stop_reason, usage.output_tokens): read as fields
+// of that answer, never from the text. A refused produce carries them, so a reader can tell an answer cut at the model's
+// output limit (stop_reason "max_tokens") from a complete one that is wrong; a parse failure alone could not say which.
+type Ending = { stop_reason?: string; output_tokens?: number }
+const endingOf = (result: Record<string, unknown>): Ending => {
+  const stop = result.stop_reason
+  const out = (result.usage as { output_tokens?: unknown } | undefined)?.output_tokens
+  return { ...(typeof stop === "string" && stop !== "" ? { stop_reason: stop } : {}), ...(typeof out === "number" ? { output_tokens: out } : {}) }
+}
+// One journal line per refused produce: what was asked for, why, how the answer ended and how big the prompt was. Never
+// the prompt or the answer (they carry whatever the rows did).
+const journalRefused = (shape: string, why: string, end: Ending, promptBytes: number): void =>
+  console.error(`[described] produce ${shape} refused 422 (${why}): stop_reason ${end.stop_reason ?? "unknown"}, output_tokens ${end.output_tokens ?? "unknown"}, prompt ${promptBytes} bytes`)
 
 // A model often wraps its JSON in a fenced code block, with or without prose around it. When the text holds exactly
 // one fenced block, parse its body; otherwise (none, or several, which is ambiguous) parse the text as it is, so
@@ -305,6 +318,7 @@ const make = async (p: Ask): Promise<Response> => {
     ...(namedNotShown.length > 0 ? { named_not_shown: `rows a shown refusal names that did not fit: ${namedNotShown.join(", ")}` } : {}),
     ...(notShownWhole.length > 0 ? { not_shown_whole: notShownWhole } : {}),
   })
+  const promptBytes = Buffer.byteLength(text)
   let last = { result: {} as Record<string, unknown>, field: "" }
   for (const c of channel.calls as ChannelCall[]) {
     const r = await resolve({ ...c.pointer, [c.input_field]: text })
@@ -324,18 +338,27 @@ const make = async (p: Ask): Promise<Response> => {
   try {
     body = JSON.parse(unfenced(text)) as Record<string, unknown>
   } catch (e) {
-    // The text that failed to parse is the evidence of why; carry its start.
-    return Response.json({ failure: { status: 422, body: `${String(e)}; text began: ${JSON.stringify(text.slice(0, 200))}` } }, { status: 422 })
+    // The text that failed to parse is the evidence of why; carry its start. An answer the model's output limit cut short
+    // says so first, in plain words, so it is not read as a malformed answer: what fixes it is a smaller answer.
+    const end = endingOf(last.result)
+    const why = end.stop_reason === "max_tokens" ? `output cut at the model's output limit after ${end.output_tokens ?? "an unknown number of"} tokens` : String(e)
+    journalRefused(p.shape, end.stop_reason === "max_tokens" ? "output cut" : "not JSON", end, promptBytes)
+    return Response.json({ failure: { status: 422, body: `${why}; text began: ${JSON.stringify(text.slice(0, 200))}`, ...end } }, { status: 422 })
+  }
+  const ending = endingOf(last.result)
+  const refused = (body: string): Response => {
+    journalRefused(p.shape, "schema", ending, promptBytes)
+    return refusedBySchema(body, ending)
   }
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
-    return refusedBySchema(checked.errors)
+    return refused(checked.errors)
   }
   // A value the schema says must name something a read returned (a shape to call, among those served) is held to it
   // here: a description alone did not stop a model copying names that are not shapes.
   const outside = shapeIn(schema.schema, body, answered)
   if (outside.length > 0) {
-    return refusedBySchema(outside.join("; ").slice(0, 1000))
+    return refused(outside.join("; ").slice(0, 1000))
   }
   // And a value it says names a row the producer was shown must be one of those rows. A row the walk's record of a call
   // carried whole (a hop's output: the row a vessel answered with) was shown too, as the prompt rendered it (after the
@@ -358,12 +381,12 @@ const make = async (p: Ask): Promise<Response> => {
     }
   }
   if (unseen.length > 0) {
-    return refusedBySchema(unseen.join("; ").slice(0, 1000))
+    return refused(unseen.join("; ").slice(0, 1000))
   }
   // And a value it says must be what a shown row holds must be exactly that.
   const unequal = equalsIn(schema.schema, body, seen)
   if (unequal.length > 0) {
-    return refusedBySchema(unequal.join("; ").slice(0, 1000))
+    return refused(unequal.join("; ").slice(0, 1000))
   }
   // And a value it says must be one of what shown rows hold (x-in) must be one of them, read from the owner's marked
   // reads only: the owner chose that source (and, in the read's where, whose rows count). A row of the shape given as an
@@ -371,7 +394,7 @@ const make = async (p: Ask): Promise<Response> => {
   const marked = ownerShown.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string" && typeof x?.shape === "string") : [])
   const outside_ = inIn(schema.schema, body, marked)
   if (outside_.length > 0) {
-    return refusedBySchema(outside_.join("; ").slice(0, 1000))
+    return refused(outside_.join("; ").slice(0, 1000))
   }
   const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
   // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one it

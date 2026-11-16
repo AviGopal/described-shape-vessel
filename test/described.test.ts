@@ -47,6 +47,7 @@ let moreSchemas: Array<Record<string, unknown>> = []
 
 let llmContent = JSON.stringify({ text: "hi" })
 let llmFailure: Record<string, unknown> | null = null
+let vesselErr = ""
 // discovery's own answer when no producer serves the model's shape (it never reached a resolver)
 let llmUnrouted = false
 let readsDown = false
@@ -97,6 +98,12 @@ beforeAll(async () => {
     DESCRIBED_VESSEL_ID: "described-test", DESCRIBED_PORT: String(port), DISCOVERY_URL: discovery.url,
     DESCRIBED_ENDPOINT: `http://127.0.0.1:${port}`, IDENTITY_VESSEL_URL: identity.url, METABOB_API_KEY: NODE_KEY,
   })
+  // what the vessel journals, kept for the legs that read it
+  ;(async () => {
+    const rd = (vessel.stderr as ReadableStream<Uint8Array>).getReader()
+    const dec = new TextDecoder()
+    for (;;) { const { value, done } = await rd.read(); if (done) break; vesselErr += dec.decode(value) }
+  })()
   await healthy(port)
   await until(() => discovery.seen.some((s) => s.path === "/register"), "/register")
 })
@@ -488,6 +495,35 @@ describe("described-shape vessel", () => {
     llmContent = JSON.stringify({ text: "hi" })
     expect(r.status).toBe(422)
     expect(JSON.stringify(r.body)).toContain("not json at all")
+  })
+
+  test("[MUST-FAIL] an answer cut at the model's output limit says so, with how it ended; a complete wrong answer says how it ended too", async () => {
+    // the resolver's own answer form (llm-resolver anthropic branch): the text cut inside a string, stop_reason max_tokens
+    const answer = (content: string, stop_reason: string, output_tokens: number) => ({ resolved: true, shape: "llmCompletion", content,
+      provider: "anthropic", model: "model-served", usage: { input_tokens: 9000, output_tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, stop_reason })
+    const from = vesselErr.length
+    try {
+      llmFailure = answer('{"text": "an edit whose old_string was cut in the mid', "max_tokens", 4096)
+      const cut = await produce(NODE_KEY)
+      llmFailure = answer("not json at all", "end_turn", 12)
+      const malformed = await produce(NODE_KEY)
+      llmFailure = answer(JSON.stringify({ other: 1 }), "end_turn", 8)
+      const misfit = await produce(NODE_KEY)
+      llmFailure = null
+      const f = (r: any) => r.body.failure
+      expect([cut.status, f(cut).stop_reason, f(cut).output_tokens, String(f(cut).body).startsWith("output cut at the model's output limit after 4096 tokens"),
+        String(f(cut).body).includes("old_string was cut")]).toEqual([422, "max_tokens", 4096, true, true])
+      expect([malformed.status, f(malformed).stop_reason, f(malformed).output_tokens, String(f(malformed).body).includes("output cut")]).toEqual([422, "end_turn", 12, false])
+      expect([f(misfit).refused, f(misfit).stop_reason, f(misfit).output_tokens]).toEqual(["schema", "end_turn", 8])
+      // one journal line per refused produce, saying why and how it ended, never the answer's text
+      // the journal arrives through a pipe: wait for it, bounded well inside the test's own time limit
+      for (let i = 0; i < 80 && vesselErr.slice(from).split("\n").filter((l) => l.startsWith("[described] produce answer refused 422")).length < 3; i++) await Bun.sleep(25)
+      const said = vesselErr.slice(from).split("\n").filter((l) => l.startsWith("[described] produce answer refused 422"))
+      expect(said.map((l) => /\(([^)]*)\): stop_reason (\S+), output_tokens (\S+)/.exec(l)?.slice(1))).toEqual([["output cut", "max_tokens", "4096,"], ["not JSON", "end_turn", "12,"], ["schema", "end_turn", "8,"]])
+      expect(said.some((l) => l.includes("old_string") || l.includes("not json at all"))).toBe(false)
+    } finally {
+      llmFailure = null
+    }
   })
 
   test("[MUST-FAIL] a context entry with a where shows only the rows it matches: a tool call's ended hop, not the walk's own steps", async () => {

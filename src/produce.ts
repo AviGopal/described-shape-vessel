@@ -3,7 +3,7 @@ import { authenticate } from "./auth"
 import { check, equalsIn, matches, shapeIn, shownIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
-import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_WRITE, REQUIRES, SHAPE_SCHEMA } from "./shapes"
+import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_SCHEMA } from "./shapes"
 
 type Row = { id: string; [k: string]: unknown }
 type ChannelCall = {
@@ -166,10 +166,34 @@ const make = async (p: Ask): Promise<Response> => {
   // A read pointer value {"x-inputs": true} is bound to the ids of the input rows shown, so a read the owner scopes to
   // the request (record_lapsed's asks) answers about this request alone.
   const inputIds = used.filter((r) => inputs.has(String(r.shape))).map((r) => r.id)
-  const bound = (pointer: object): object => Object.fromEntries(Object.entries(pointer).map(([k, v]) =>
-    [k, typeof v === "object" && v !== null && (v as Record<string, unknown>)["x-inputs"] === true ? inputIds : v]))
+  // A read pointer value {"x-since": "<shape>"} is bound to the sequence number of the newest row of that shape (0 when
+  // there is none), so a read the owner scopes to a window (after_seq) reads what happened since that shape was last
+  // written: a retrospective reads since the previous one (the USER: "on this one horizon"). Counted by records'
+  // record_summary, so no row is read for it; a summary that fails binds nothing and the read is refused by name.
+  const sinceOf = async (shape: string): Promise<number | undefined> => {
+    const a = await records(RECORD_SUMMARY, { shape, summarize: ["shape"] })
+    if (!a.ok) return undefined
+    const n = (a.body as { newest_seq?: unknown } | undefined)?.newest_seq
+    return typeof n === "number" && Number.isFinite(n) ? n : 0
+  }
+  const bound = async (pointer: object): Promise<object | { unbound: string }> => {
+    const out: Array<[string, unknown]> = []
+    for (const [k, v] of Object.entries(pointer)) {
+      const o = typeof v === "object" && v !== null ? v as Record<string, unknown> : undefined
+      if (o?.["x-inputs"] === true) { out.push([k, inputIds]); continue }
+      if (typeof o?.["x-since"] === "string") {
+        const n = await sinceOf(String(o["x-since"]))
+        if (n === undefined) return { unbound: `${k}: the newest ${String(o["x-since"])} could not be counted` }
+        out.push([k, n]); continue
+      }
+      out.push([k, v])
+    }
+    return Object.fromEntries(out)
+  }
   for (const pointer of [schema.reads ?? []].flat() as object[]) {
-    const r = await resolve(bound(pointer))
+    const p = await bound(pointer)
+    if ("unbound" in p) return fail(502, String(p.unbound))
+    const r = await resolve(p)
     if (!r.ok) {
       return fail(r.status, r.text, unservedOf(r.text))
     }

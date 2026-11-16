@@ -39,6 +39,9 @@ const LAPSED = [
 ]
 // The owner's requires rows, as a record_read of shape requires answers
 let REQUIRES_ROWS: Array<Record<string, unknown>> = []
+// What a record_summary answers for its newest_seq (null: no such row), or a failure
+let SUMMARY_NEWEST: number | null = null
+let summaryDown = false
 // Schema rows besides SCHEMA (newer ones, as records lists them oldest first)
 let moreSchemas: Array<Record<string, unknown>> = []
 
@@ -57,6 +60,8 @@ const resolve = (p: Record<string, any>): Response => {
   // The owner also describes shapes it does not want produced (a detector's gap): never something to serve.
   if (p.type === "record_read" && p.shape === "shape_description") return Response.json([{ shape: "shape_description", id: "sd1", of: "gap" }])
   if (p.type === "record_read" && p.shape === "requires") return Response.json(REQUIRES_ROWS)
+  if (p.type === "record_summary") return summaryDown ? Response.json({ error: "down" }, { status: 503 })
+    : Response.json({ shape: p.shape, count: SUMMARY_NEWEST === null ? 0 : 1, newest_seq: SUMMARY_NEWEST, fields: {} })
   if (p.type === "record_read" && p.shape === "channel") return Response.json((p.ids as string[]).includes(CHANNEL.id) ? [CHANNEL] : [])
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
@@ -566,6 +571,31 @@ describe("described-shape vessel", () => {
     expect(read.pointer.asks).toEqual(["w1"])
     expect(prompt).toContain('"d1"')
     expect(prompt).not.toContain('"d9"')
+  })
+
+  // A window: a read the owner scopes to "since that shape was last written" (the USER: a retrospective "on this one horizon").
+  const sinceRun = async (newest: number | null, down = false) => {
+    ;(SCHEMA as any).reads = [{ type: "record_summary", shape: "failure", summarize: ["kind"], after_seq: { "x-since": "retrospective" } }]
+    SUMMARY_NEWEST = newest; summaryDown = down
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY)
+    delete (SCHEMA as any).reads; SUMMARY_NEWEST = null; summaryDown = false
+    const calls = discovery.seen.slice(before)
+    const reads = calls.map((c) => (c.body as any)?.pointer).filter((p) => p?.type === "record_summary")
+    return { status: r.status, body: r.body, reads, llm: calls.some((c) => (c.body as any)?.pointer?.type === "llm_completion") }
+  }
+
+  test("[MUST-FAIL] a read pointer value {x-since: shape} is bound to that shape's newest seq, counted without reading a row", async () => {
+    const r = await sinceRun(4200)
+    expect(r.status).toBe(200)
+    expect(r.reads.find((p) => p.shape === "retrospective")).toMatchObject({ shape: "retrospective", summarize: ["shape"] })
+    expect(r.reads.find((p) => p.shape === "failure")?.after_seq).toBe(4200)
+  })
+
+  test("[MUST-FAIL] with no row of that shape the window starts at 0; a count that fails refuses the produce by name, with no model call", async () => {
+    expect((await sinceRun(null)).reads.find((p) => p.shape === "failure")?.after_seq).toBe(0)
+    const down = await sinceRun(5, true)
+    expect([down.status, JSON.stringify(down.body).includes("after_seq: the newest retrospective could not be counted"), down.llm]).toEqual([502, true, false])
   })
 
   test("[MUST-FAIL] a value the schema says names a served shape is refused when it is not one, and kept when it is", async () => {

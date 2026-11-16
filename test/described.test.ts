@@ -241,9 +241,9 @@ describe("described-shape vessel", () => {
   // What a call requires, shown first (52d7196f: an edit written by a producer shown none of the file it edited, its
   // read dropped for newer hops). The owner's requires row, as the seed writes it for fs_edit.
   const REQ = { shape: "requires", id: "rq1", seq: 1, role: "owner", for: "fs_edit", needs: "fileContent", where: { path: { "x-pointer": "path" } }, latest_by: "path", group: "read" }
-  const reqRun = async (opts: { reqs?: Array<Record<string, unknown>>; given?: boolean; share?: number; extra?: Array<Record<string, unknown>>; entry?: Record<string, unknown> }) => {
+  const reqRun = async (opts: { reqs?: Array<Record<string, unknown>>; given?: boolean; share?: number; extra?: Array<Record<string, unknown>>; entry?: Record<string, unknown>; more?: Array<Record<string, unknown>> }) => {
     const ctx = (SCHEMA as any).context
-    ;(SCHEMA as any).context = ["hop", "failure", opts.entry ?? { shape: "fileContent", whole: true, latest_by: "path" }]
+    ;(SCHEMA as any).context = ["hop", "failure", opts.entry ?? { shape: "fileContent", whole: true, latest_by: "path" }, ...(opts.more ?? [])]
     ;(SCHEMA as any).keep_share = opts.share ?? 0.25
     REQUIRES_ROWS = opts.given ? [] : (opts.reqs ?? [])
     const file = { shape: "fileContent", id: "fc-edit", seq: 50, path: "/trees/c2/src/EDITED.ts", input_refs: ["w1"], content: "EDITED_FILE_BODY " + "e".repeat(20000) }
@@ -269,6 +269,15 @@ describe("described-shape vessel", () => {
       expect([given, r.status, r.prompt.includes("EDITED_FILE_BODY"), (r.row.input_refs as string[]).includes("fc-edit")]).toEqual([given, 200, true, true])
       expect(r.prompt).toContain("rstep-79.") // the newest hop still shown
     }
+  })
+
+  test("[MUST-FAIL] required reads that fill a share never push out the kept rows: the request's clone is still shown beside them", async () => {
+    // two more reads of other files, so the required rows alone (~66 KB) are more than the keep share (48 KB)
+    const reads = ["A", "B"].map((x, i) => ({ shape: "fileContent", id: `fc-${x}`, seq: 55 + i, path: `/trees/c2/src/${x}.ts`, input_refs: ["w1"], content: `READ_${x} ` + "r".repeat(22000) }))
+    // bigger than what two reads leave of one 48 KB share, so it fits only with a share of its own
+    const clone = { shape: "gitWorktree", id: "gw-own", seq: 45, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], note: "c".repeat(6000) }
+    const r = await reqRun({ reqs: [REQ], extra: [...reads, clone], more: [{ shape: "gitWorktree", latest_by: "repo", keep: true }] })
+    expect([r.prompt.includes("/trees/OWN_CLONE"), (r.row.input_refs as string[]).includes("gw-own"), r.prompt.includes("READ_B")]).toEqual([true, true, true])
   })
 
   test("[MUST-FAIL] with no requires row, one not the owner's, or no keep share, it is left to the budget (as before)", async () => {
@@ -324,6 +333,9 @@ describe("described-shape vessel", () => {
     const edited = fx.rows.find((x) => x.edited)!.id
     const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     expect([r.status, prompt.includes("EDITED_REAL_FILE"), (row?.input_refs as string[] | undefined)?.includes(edited)]).toEqual([200, true, true])
+    // and the request's newest clone, commit and acts (the kept rows) are cited beside it
+    const newest = (shape: string) => fx.rows.filter((x) => x.shape === shape).sort((a, b) => b.seq - a.seq)[0].id
+    expect(["gitWorktree", "gitCommitResult", "request_acts"].map((s) => (row?.input_refs as string[]).includes(newest(s)))).toEqual([true, true, true])
   })
 
   test("[MUST-FAIL] a kept entry's row is shown and cited past more than the whole budget of newer context; the row records what was left out", async () => {

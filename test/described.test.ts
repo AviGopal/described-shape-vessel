@@ -37,6 +37,8 @@ const LAPSED = [
   { shape: "due", id: "d1", role: "described", within_ms: 60000, at: 1, input_refs: ["w1"] },
   { shape: "due", id: "d9", role: "described", within_ms: 60000, at: 1, input_refs: ["w9"] }, // another request's
 ]
+// The owner's requires rows, as a record_read of shape requires answers
+let REQUIRES_ROWS: Array<Record<string, unknown>> = []
 // Schema rows besides SCHEMA (newer ones, as records lists them oldest first)
 let moreSchemas: Array<Record<string, unknown>> = []
 
@@ -54,6 +56,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read" && p.shape === "shape_schema") return Response.json([SCHEMA, ...moreSchemas])
   // The owner also describes shapes it does not want produced (a detector's gap): never something to serve.
   if (p.type === "record_read" && p.shape === "shape_description") return Response.json([{ shape: "shape_description", id: "sd1", of: "gap" }])
+  if (p.type === "record_read" && p.shape === "requires") return Response.json(REQUIRES_ROWS)
   if (p.type === "record_read" && p.shape === "channel") return Response.json((p.ids as string[]).includes(CHANNEL.id) ? [CHANNEL] : [])
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
@@ -234,6 +237,92 @@ describe("described-shape vessel", () => {
     const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
     return { status: r.status, prompt, row }
   }
+
+  // What a call requires, shown first (52d7196f: an edit written by a producer shown none of the file it edited, its
+  // read dropped for newer hops). The owner's requires row, as the seed writes it for fs_edit.
+  const REQ = { shape: "requires", id: "rq1", seq: 1, role: "owner", for: "fs_edit", needs: "fileContent", where: { path: { "x-pointer": "path" } }, latest_by: "path", group: "read" }
+  const reqRun = async (opts: { reqs?: Array<Record<string, unknown>>; given?: boolean; share?: number; extra?: Array<Record<string, unknown>>; entry?: Record<string, unknown> }) => {
+    const ctx = (SCHEMA as any).context
+    ;(SCHEMA as any).context = ["hop", "failure", opts.entry ?? { shape: "fileContent", whole: true, latest_by: "path" }]
+    ;(SCHEMA as any).keep_share = opts.share ?? 0.25
+    REQUIRES_ROWS = opts.given ? [] : (opts.reqs ?? [])
+    const file = { shape: "fileContent", id: "fc-edit", seq: 50, path: "/trees/c2/src/EDITED.ts", input_refs: ["w1"], content: "EDITED_FILE_BODY " + "e".repeat(20000) }
+    const hops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hr${i}`, seq: 100 + i, output: { text: `rstep-${i}. ` + "x".repeat(3000) } }))
+    const rows = [file, ...hops, ...(opts.given ? (opts.reqs ?? []) : []), ...(opts.extra ?? [])]
+    INPUTS.push(...(rows as any))
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = ctx
+    delete (SCHEMA as any).keep_share
+    REQUIRES_ROWS = []
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    return { status: r.status, prompt, row }
+  }
+
+  test("[MUST-FAIL] a row a call requires is shown first, however much newer context there is, whether the requires row is read or given", async () => {
+    for (const given of [false, true]) {
+      const r = await reqRun({ reqs: [REQ], given })
+      expect([given, r.status, r.prompt.includes("EDITED_FILE_BODY"), (r.row.input_refs as string[]).includes("fc-edit")]).toEqual([given, 200, true, true])
+      expect(r.prompt).toContain("rstep-79.") // the newest hop still shown
+    }
+  })
+
+  test("[MUST-FAIL] with no requires row, one not the owner's, or no keep share, it is left to the budget (as before)", async () => {
+    for (const o of [{ reqs: [] }, { reqs: [{ ...REQ, role: "described" }] }, { reqs: [REQ], share: 0 }]) {
+      const r = await reqRun(o)
+      expect([JSON.stringify(o.reqs.map((q) => q.role)), r.prompt.includes("EDITED_FILE_BODY")]).toEqual([JSON.stringify(o.reqs.map((q) => q.role)), false])
+    }
+  })
+
+  test("[MUST-FAIL] only the request's own rows, the newest per latest_by, and only those meeting the requires row's fixed where", async () => {
+    const other = { shape: "fileContent", id: "fc-other", seq: 60, path: "/trees/x/OTHER.ts", input_refs: ["w9"], content: "OTHER_LINEAGE_BODY " + "o".repeat(20000) }
+    const older = { shape: "fileContent", id: "fc-old", seq: 40, path: "/trees/c2/src/EDITED.ts", input_refs: ["w1"], content: "OLDER_READ_BODY " + "d".repeat(20000) }
+    const r = await reqRun({ reqs: [REQ], extra: [other, older] })
+    expect([r.prompt.includes("EDITED_FILE_BODY"), r.prompt.includes("OTHER_LINEAGE_BODY"), r.prompt.includes("OLDER_READ_BODY")]).toEqual([true, false, false])
+    // the requires row's own latest_by, even where the owner's context entry has none
+    const plain = await reqRun({ reqs: [REQ], extra: [older], entry: { shape: "fileContent", whole: true } })
+    expect([plain.prompt.includes("EDITED_FILE_BODY"), plain.prompt.includes("OLDER_READ_BODY")]).toEqual([true, false])
+    const fixed = await reqRun({ reqs: [{ ...REQ, where: { path: "/trees/c2/src/NOT_THIS.ts" } }] })
+    expect(fixed.prompt.includes("EDITED_FILE_BODY")).toBe(false)
+  })
+
+  test("[MUST-FAIL] on 62707's real pool (a gap root; sizes, sequence and citations as they were) the edited file's read is shown", async () => {
+    // database's read of the rows the walk gave that producer, scrubbed: ids remapped, paths cut to the clone-relative
+    // part, bodies padded to each row's real size. With the live request schema (the gap variant), the base fill showed
+    // none of the 8 file reads; the edited file's (seq 59472) was older than everything shown.
+    const { gunzipSync } = await import("node:zlib")
+    const { readFileSync } = await import("node:fs")
+    const fx = JSON.parse(gunzipSync(readFileSync(new URL("./fixtures/p62707.json.gz", import.meta.url))).toString()) as
+      { root: string; rows: Array<{ id: string; shape: string; seq: number; bytes: number; input_refs: string[]; path?: string; edited?: boolean }> }
+    const rows = fx.rows.map((r) => {
+      const base = { shape: r.shape, id: r.id, seq: r.seq, role: r.shape === "gap" ? "detector" : "walk", input_refs: r.input_refs, ...(r.path ? { path: r.path } : {}) }
+      const mark = r.edited ? "EDITED_REAL_FILE " : ""
+      const pad = mark + "p".repeat(Math.max(0, r.bytes - JSON.stringify(base).length - 20 - mark.length))
+      return r.shape === "hop" ? { ...base, output: { text: pad } } : r.shape === "fileContent" ? { ...base, content: pad } : { ...base, pad }
+    })
+    const ctx = (SCHEMA as any).context, ins = (SCHEMA as any).inputs
+    ;(SCHEMA as any).inputs = ["gap"]
+    ;(SCHEMA as any).context = ["hop", "failure", "answer", "outcome", { shape: "fileContent", whole: true, latest_by: "path", covers: { shape: "hop", on: "call_id" } },
+      { shape: "gitWorktree", latest_by: "repo", keep: true }, { shape: "change_wanted", latest_by: "repo", keep: true },
+      { shape: "gitCommitResult", latest_by: "shape", keep: true }, { shape: "request_acts", latest_by: "shape", keep: true }]
+    ;(SCHEMA as any).keep_share = 0.25
+    REQUIRES_ROWS = [REQ]
+    INPUTS.push(...(rows as any))
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: rows.map((x) => x.id) })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).context = ctx; (SCHEMA as any).inputs = ins
+    delete (SCHEMA as any).keep_share
+    REQUIRES_ROWS = []
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const edited = fx.rows.find((x) => x.edited)!.id
+    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    expect([r.status, prompt.includes("EDITED_REAL_FILE"), (row?.input_refs as string[] | undefined)?.includes(edited)]).toEqual([200, true, true])
+  })
 
   test("[MUST-FAIL] a kept entry's row is shown and cited past more than the whole budget of newer context; the row records what was left out", async () => {
     const r = await keepRun({ keep: true, share: 0.25 })

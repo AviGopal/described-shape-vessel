@@ -3,7 +3,7 @@ import { authenticate } from "./auth"
 import { check, equalsIn, matches, shapeIn, shownIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
-import { CHANNEL, DESCRIBED, RECORD_READ, RECORD_WRITE, SHAPE_SCHEMA } from "./shapes"
+import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_WRITE, REQUIRES, SHAPE_SCHEMA } from "./shapes"
 
 type Row = { id: string; [k: string]: unknown }
 type ChannelCall = {
@@ -198,6 +198,30 @@ const make = async (p: Ask): Promise<Response> => {
   const share = typeof schema.keep_share === "number" && schema.keep_share > 0 && schema.keep_share <= 1 ? schema.keep_share : 0
   const own = (r: Row): boolean => [r.input_refs].flat().some((id) => inputIds.includes(String(id)))
   const kept = share > 0 ? used.filter((r) => !inputs.has(String(r.shape)) && entryOf(r)?.keep === true && own(r)) : []
+  // WHAT A CALL REQUIRES IS SHOWN FIRST. The owner's requires rows ({for, needs, where, latest_by}) gate a call on rows of
+  // a shape (the walk offers fs_edit only once its file was read); a producer that writes such a call must be shown
+  // those rows, or the gate and the prompt disagree (52d7196f: an edit written by a producer shown none of the file it
+  // edited, its read dropped by the budget for older hops). So the rows that would meet some requires row are fitted
+  // first, newest first, within the keep share: read as the walk reads them, the newest owner row per (for, needs), its
+  // where with the values the call's own pointer gives (x-pointer) left open, since the call is not written yet; newest
+  // per its latest_by; only the request's own rows. The shapes and fields are the owner's rows'; this names none. Taken
+  // from the rows given, else read; a read that fails shows nothing first rather than refuse the produce.
+  const reqRows = all.some((r) => r.shape === REQUIRES) ? all.filter((r) => r.shape === REQUIRES)
+    : await records(RECORD_READ, { shape: REQUIRES }).then((a) => (a.ok && Array.isArray(a.body) ? a.body as Row[] : []))
+  const reqs = [...reqRows.filter((r) => r.role === OWNER).sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))
+    .reduce((m, r) => m.set(JSON.stringify([String(r.for), String(r.needs)]), r), new Map<string, Row>()).values()]
+  const meets = (r: Row, q: Row): boolean => String(r.shape) === String(q.needs) &&
+    Object.entries((q.where ?? {}) as Record<string, unknown>).every(([k, v]) =>
+      typeof v === "object" && v !== null && !Array.isArray(v) ? true : Array.isArray(v) ? v.includes(r[k]) : r[k] === v)
+  const required: Row[] = []
+  for (const q of reqs) {
+    const newestOf = new Map<string, Row>()
+    for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
+      if (inputs.has(String(r.shape)) || !own(r) || !meets(r, q)) continue
+      newestOf.set(typeof q.latest_by === "string" ? JSON.stringify(r[q.latest_by]) : r.id, r)
+    }
+    required.push(...newestOf.values())
+  }
   const fitted = new Set<string>()
   let spent = 0
   const fill = (rs: Row[], budget: number): void => {
@@ -210,6 +234,7 @@ const make = async (p: Ask): Promise<Response> => {
       fitted.add(r.id)
     }
   }
+  fill(required, CONTEXT_BUDGET * share)
   fill(kept, CONTEXT_BUDGET * share)
   fill(used.filter((x) => !inputs.has(String(x.shape))), CONTEXT_BUDGET)
   const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))

@@ -283,6 +283,25 @@ describe("described-shape vessel", () => {
     }
   })
 
+  test("[MUST-FAIL] a requires row bound to the clone's newest tree shows first only the verdict on that tree", async () => {
+    const XL = { "x-latest": { shapes: ["gitCommitResult", "gitWorktree", "gitDiff"], moves: ["gitCommitResult", "gitWorktree"], same: "cwd", field: "tree" } }
+    const req = { shape: "requires", id: "rqL", seq: 1, role: "owner", for: "git_land", needs: "land_verdict", where: { r: 1, tree: XL }, latest_by: "tree", group: "verdict" }
+    const clone = [
+      { shape: "selection", id: "sel-1", seq: 9, role: "walk", root: "w1" },
+      { shape: "gitWorktree", id: "cl", seq: 10, role: "walk", call_id: "c-cl", cwd: "/c", input_refs: ["w1"] },
+      { shape: "gitCommitResult", id: "k2", seq: 11, role: "walk", call_id: "c-k2", cwd: "/c", tree: "TREE_TWO", input_refs: ["w1"] },
+    ]
+    const verdicts = [
+      { shape: "land_verdict", id: "vOld", seq: 60, role: "described", r: 1, tree: "TREE_ONE", input_refs: ["w1"], why: "VERDICT_ON_ONE " + "o".repeat(2000) },
+      { shape: "land_verdict", id: "vNew", seq: 61, role: "described", r: 1, tree: "TREE_TWO", input_refs: ["w1"], why: "VERDICT_ON_TWO " + "n".repeat(2000) },
+    ]
+    const shown = await reqRun({ reqs: [req], extra: [...clone, ...verdicts], entry: { shape: "land_verdict" } })
+    expect([shown.prompt.includes("VERDICT_ON_TWO"), shown.prompt.includes("VERDICT_ON_ONE")]).toEqual([true, false])
+    // the clone moved without saying its tree: no verdict is the newest tree's, so none is shown first
+    const moved = await reqRun({ reqs: [req], extra: [...clone, { ...clone[1], id: "cl2", seq: 12, call_id: "c-cl2" }, ...verdicts], entry: { shape: "land_verdict" } })
+    expect([moved.prompt.includes("VERDICT_ON_TWO"), moved.prompt.includes("VERDICT_ON_ONE")]).toEqual([false, false])
+  })
+
   test("[MUST-FAIL] a row a shown refusal names is shown with it, ahead of older rows; without the name, it is left to the budget (90b4ece3)", async () => {
     // an old verdict the budget would drop behind 80 newer hops, and the walk's skip naming it (against_refs)
     const verdict = { shape: "land_verdict", id: "lv-old", seq: 60, r: 0, tree: "t-old", input_refs: ["w1"], note: "OLD_VERDICT " + "v".repeat(2000) }
@@ -848,8 +867,9 @@ describe("described-shape vessel", () => {
     // the owner's entry: a diff a tool recorded (role walk), of the clone's newest tree
     ;(SCHEMA as any).inputs = ["world_changed", { shape: "gitDiff", latest_by: "shape", where: { tree: XL, role: "walk" } }]
     const tool = (id: string, seq: number, shape: string, tree?: string, extra: Record<string, unknown> = {}) =>
-      ({ shape, id, seq, role: "walk", call_id: `c-${id}`, cwd: "/c", ...(tree ? { tree } : {}), ...extra })
+      ({ shape, id, seq, role: "walk", call_id: `c-${id}`, cwd: "/c", ...(tree ? { tree } : {}), input_refs: ["w1"], ...extra })
     const rows = [
+      { shape: "selection", id: "s-w", seq: 9, role: "walk", root: "w1" }, // the selection names the root whose clone it is
       tool("wt", 10, "gitWorktree"),
       tool("k1", 11, "gitCommitResult", "TREE_ONE"),
       tool("dA", 12, "gitDiff", "TREE_ONE", { diff: "DIFF_OF_ONE" }),
@@ -859,6 +879,11 @@ describe("described-shape vessel", () => {
       { shape: "gitDiff", id: "dM", seq: 16, role: "described", cwd: "/c", tree: "TREE_THREE", diff: "DIFF_BY_A_MODEL" },
       { shape: "gitCommitResult", id: "kM", seq: 17, role: "described", cwd: "/c", tree: "TREE_NINE" }, // a model's row naming a tree
       tool("wt2", 18, "gitWorktree"), // a move that does not say its tree
+      tool("dX", 19, "gitDiff", "TREE_X", { cwd: "/x", diff: "DIFF_OF_ANOTHER_CLONE" }), // another clone's newer diff
+      tool("dT", 20, "gitDiff", undefined, { diff: "DIFF_WITH_NO_TREE" }), // a diff that names no tree
+      // another request's clone, newer, among the rows given: never this request's
+      tool("wtY", 21, "gitWorktree", undefined, { cwd: "/y", input_refs: ["another-root"] }),
+      tool("kY", 22, "gitCommitResult", "TREE_Y", { cwd: "/y", input_refs: ["another-root"] }),
     ]
     INPUTS.push(...(rows as any))
     const at = async (ids: string[]) => (await askWith(["w1", ...ids])).prompt
@@ -866,11 +891,16 @@ describe("described-shape vessel", () => {
     const moved = await at(["wt", "k1", "dA", "k2", "dB", "k3", "dM"]) // a commit since: no diff of TREE_THREE by a tool (a model's names it)
     const modelRow = await at(["wt", "k1", "dA", "k2", "dB", "kM"]) // a model's newer tree moves nothing: still TREE_TWO
     const unknown = await at(["wt", "k1", "dA", "k2", "dB", "wt2"]) // the clone moved without its tree: no diff is of it
+    const other = await at(["wt", "k1", "dA", "k2", "dB", "dX"]) // another clone's newer diff: still TREE_TWO's
+    const treeless = await at(["wt", "k1", "dA", "k2", "dB", "wt2", "dT"]) // unknown meets nothing, a tree-less diff included
+    const twoClones = await at(["wt", "k1", "dA", "k2", "dB", "wtY", "kY"]) // the root's clone, not the newest clone given
     INPUTS.splice(INPUTS.length - rows.length, rows.length)
     ;(SCHEMA as any).inputs = inputs
     expect([newest.includes("DIFF_OF_TWO"), newest.includes("DIFF_OF_ONE")]).toEqual([true, false])
     expect([moved.includes("DIFF_OF_TWO"), moved.includes("DIFF_BY_A_MODEL"), moved.includes("DIFF_OF_ONE")]).toEqual([false, false, false])
     expect([modelRow.includes("DIFF_OF_TWO"), unknown.includes("DIFF_OF_TWO")]).toEqual([true, false])
+    expect([other.includes("DIFF_OF_TWO"), other.includes("DIFF_OF_ANOTHER_CLONE"), treeless.includes("DIFF_WITH_NO_TREE")]).toEqual([true, false, false])
+    expect(twoClones.includes("DIFF_OF_TWO")).toBe(true)
   })
 
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {

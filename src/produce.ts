@@ -138,27 +138,46 @@ const make = async (p: Ask): Promise<Response> => {
   // row from another row of its shape with the same value at on (an ended hop names no shape called; its started hop
   // does); that other row is neither shown nor cited.
   const all = ins.body as Row[]
-  // THE CLONE'S NEWEST TREE (x-latest), read as the walk reads it: a where value {"x-latest": {shapes, moves, same,
-  // field}} is the field of the newest row of those shapes the walk recorded from a tool's answer (role walk, with a
-  // call_id) on the clone (the same `same` as the newest such row of a `moves` shape among the rows given: the walk gives
-  // this request's own), that holds the field; a newer `moves` row without it leaves it unknown, and an unknown value
-  // matches no row. Resolved once, before any entry is matched; with no such value, every entry is as it was.
+  // THE CLONE'S NEWEST TREE (x-latest), with the walk's own definition (walk applicable.ts): a where value {"x-latest":
+  // {shapes, moves, same, field, continues}} is the field of the newest row of those shapes the walk recorded from a
+  // tool's answer (role walk, with a call_id) on the request's clone, that holds the field; a newer `moves` row without
+  // it leaves it unknown, and an unknown value meets nothing, a row without the field included. The request's clone is
+  // the `same` of the newest such `moves` row citing the root (the selection's), else of the newest earlier root of the
+  // root's shape with the same `continues` field. The root is read from the selection only when some value needs it.
+  const hasLatest = (x: unknown): boolean => JSON.stringify(x ?? null).includes('"x-latest"')
+  let rootId: string | undefined
+  const rootOf = async (): Promise<void> => {
+    if (rootId !== undefined) return
+    const given = all.find((r) => r.id === p.selection_ref)
+    const sel = given ?? await records(RECORD_READ, { ids: [p.selection_ref] }).then((a) => (a.ok && Array.isArray(a.body) ? (a.body as Row[])[0] : undefined))
+    rootId = typeof sel?.root === "string" ? sel.root : ""
+  }
+  const UNKNOWN = Symbol("unknown")
   const latestOf = (v: unknown): { value: unknown } | undefined => {
     const s = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as { "x-latest"?: unknown })["x-latest"] : undefined
     if (typeof s !== "object" || s === null) return undefined
     const o = s as Record<string, unknown>
     const list = (x: unknown): string[] => Array.isArray(x) ? x.filter((y): y is string => typeof y === "string") : []
     const [shapes, moves] = [list(o.shapes), list(o.moves)]
-    if (typeof o.same !== "string" || typeof o.field !== "string" || shapes.length === 0) return { value: undefined }
-    const [same, field] = [o.same, o.field]
+    if (typeof o.same !== "string" || typeof o.field !== "string" || shapes.length === 0) return { value: UNKNOWN }
+    const [same, field, continues] = [o.same, o.field, typeof o.continues === "string" ? o.continues : undefined]
     const byTool = all.filter((r) => r.role === "walk" && typeof r.call_id === "string").sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0))
-    const at = byTool.find((r) => moves.includes(String(r.shape)) && r[same] !== undefined)?.[same]
-    if (at === undefined) return { value: undefined }
+    const cites = (r: Row, id: string): boolean => [r.input_refs].flat().map(String).includes(id)
+    const root = all.find((r) => r.id === rootId)
+    const roots = rootId === undefined || rootId === "" ? [] : [rootId, ...(root !== undefined && continues !== undefined && root[continues] !== undefined
+      ? all.filter((r) => r.shape === root.shape && r.id !== root.id && Number(r.seq ?? 0) < Number(root.seq ?? 0)
+        && JSON.stringify(r[continues]) === JSON.stringify(root[continues])).sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0)).map((r) => r.id) : [])]
+    let at: unknown
+    for (const id of roots) {
+      at = byTool.find((r) => moves.includes(String(r.shape)) && r[same] !== undefined && cites(r, id))?.[same]
+      if (at !== undefined) break
+    }
+    if (at === undefined) return { value: UNKNOWN }
     for (const r of byTool.filter((x) => shapes.includes(String(x.shape)) && JSON.stringify(x[same]) === JSON.stringify(at))) {
       if (r[field] !== undefined) return { value: r[field] }
       if (moves.includes(String(r.shape))) break
     }
-    return { value: undefined }
+    return { value: UNKNOWN }
   }
   const resolve_ = (e: unknown): unknown => {
     if (typeof e !== "object" || e === null || Array.isArray(e)) return e
@@ -166,10 +185,12 @@ const make = async (p: Ask): Promise<Response> => {
     if (typeof where !== "object" || where === null) return e
     const w = Object.fromEntries(Object.entries(where as Record<string, unknown>).map(([k, v]) => {
       const l = latestOf(v)
-      return [k, l === undefined ? v : l.value === undefined ? v : l.value]
+      // unknown: a value no row field equals (a fresh object), so it meets nothing, a row without the field included
+      return [k, l === undefined ? v : l.value === UNKNOWN ? { unknown: true } : l.value]
     }))
     return { ...(e as object), where: w }
   }
+  if (hasLatest([schema.inputs, schema.context])) await rootOf()
   const wanted = [schema.inputs, schema.context ?? []].flat().map(resolve_)
   let used = all.flatMap((r) => {
     const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
@@ -286,10 +307,11 @@ const make = async (p: Ask): Promise<Response> => {
     : await records(RECORD_READ, { shape: REQUIRES }).then((a) => (a.ok && Array.isArray(a.body) ? a.body as Row[] : []))
   const reqs = [...reqRows.filter((r) => r.role === OWNER).sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))
     .reduce((m, r) => m.set(JSON.stringify([String(r.for), String(r.needs)]), r), new Map<string, Row>()).values()]
+  if (hasLatest(reqs.map((q) => q.where))) await rootOf()
   const meets = (r: Row, q: Row): boolean => String(r.shape) === String(q.needs) &&
     Object.entries((q.where ?? {}) as Record<string, unknown>).every(([k, v]) => {
       const l = latestOf(v)
-      if (l !== undefined) return l.value !== undefined && JSON.stringify(r[k]) === JSON.stringify(l.value)
+      if (l !== undefined) return l.value !== UNKNOWN && r[k] !== undefined && JSON.stringify(r[k]) === JSON.stringify(l.value)
       return typeof v === "object" && v !== null && !Array.isArray(v) ? true : Array.isArray(v) ? v.includes(r[k]) : r[k] === v
     })
   const required: Row[] = []

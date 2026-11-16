@@ -294,12 +294,14 @@ describe("described-shape vessel", () => {
     const verdicts = [
       { shape: "land_verdict", id: "vOld", seq: 60, role: "described", r: 1, tree: "TREE_ONE", input_refs: ["w1"], why: "VERDICT_ON_ONE " + "o".repeat(2000) },
       { shape: "land_verdict", id: "vNew", seq: 61, role: "described", r: 1, tree: "TREE_TWO", input_refs: ["w1"], why: "VERDICT_ON_TWO " + "n".repeat(2000) },
+      { shape: "land_verdict", id: "vNone", seq: 62, role: "described", r: 1, input_refs: ["w1"], why: "VERDICT_NAMING_NO_TREE " + "x".repeat(2000) },
     ]
     const shown = await reqRun({ reqs: [req], extra: [...clone, ...verdicts], entry: { shape: "land_verdict" } })
     expect([shown.prompt.includes("VERDICT_ON_TWO"), shown.prompt.includes("VERDICT_ON_ONE")]).toEqual([true, false])
     // the clone moved without saying its tree: no verdict is the newest tree's, so none is shown first
     const moved = await reqRun({ reqs: [req], extra: [...clone, { ...clone[1], id: "cl2", seq: 12, call_id: "c-cl2" }, ...verdicts], entry: { shape: "land_verdict" } })
-    expect([moved.prompt.includes("VERDICT_ON_TWO"), moved.prompt.includes("VERDICT_ON_ONE")]).toEqual([false, false])
+    expect([moved.prompt.includes("VERDICT_ON_TWO"), moved.prompt.includes("VERDICT_ON_ONE"), moved.prompt.includes("VERDICT_NAMING_NO_TREE")]).toEqual([false, false, false])
+    expect(shown.prompt.includes("VERDICT_NAMING_NO_TREE")).toBe(false)
   })
 
   test("[MUST-FAIL] a row a shown refusal names is shown with it, ahead of older rows; without the name, it is left to the budget (90b4ece3)", async () => {
@@ -884,6 +886,7 @@ describe("described-shape vessel", () => {
       // another request's clone, newer, among the rows given: never this request's
       tool("wtY", 21, "gitWorktree", undefined, { cwd: "/y", input_refs: ["another-root"] }),
       tool("kY", 22, "gitCommitResult", "TREE_Y", { cwd: "/y", input_refs: ["another-root"] }),
+      { shape: "gitWorktree", id: "wtZ", seq: 23, role: "described", cwd: "/z", input_refs: ["w1"] }, // a model's clone row
     ]
     INPUTS.push(...(rows as any))
     const at = async (ids: string[]) => (await askWith(["w1", ...ids])).prompt
@@ -894,13 +897,37 @@ describe("described-shape vessel", () => {
     const other = await at(["wt", "k1", "dA", "k2", "dB", "dX"]) // another clone's newer diff: still TREE_TWO's
     const treeless = await at(["wt", "k1", "dA", "k2", "dB", "wt2", "dT"]) // unknown meets nothing, a tree-less diff included
     const twoClones = await at(["wt", "k1", "dA", "k2", "dB", "wtY", "kY"]) // the root's clone, not the newest clone given
+    const modelClone = await at(["wt", "k1", "dA", "k2", "dB", "wtZ"]) // a model's row never sets the clone
     INPUTS.splice(INPUTS.length - rows.length, rows.length)
     ;(SCHEMA as any).inputs = inputs
     expect([newest.includes("DIFF_OF_TWO"), newest.includes("DIFF_OF_ONE")]).toEqual([true, false])
     expect([moved.includes("DIFF_OF_TWO"), moved.includes("DIFF_BY_A_MODEL"), moved.includes("DIFF_OF_ONE")]).toEqual([false, false, false])
     expect([modelRow.includes("DIFF_OF_TWO"), unknown.includes("DIFF_OF_TWO")]).toEqual([true, false])
     expect([other.includes("DIFF_OF_TWO"), other.includes("DIFF_OF_ANOTHER_CLONE"), treeless.includes("DIFF_WITH_NO_TREE")]).toEqual([true, false, false])
-    expect(twoClones.includes("DIFF_OF_TWO")).toBe(true)
+    expect([twoClones.includes("DIFF_OF_TWO"), modelClone.includes("DIFF_OF_TWO")]).toEqual([true, true])
+  })
+
+  test("[MUST-FAIL] a gap opened again takes the clone of the gap it continues (same gap_id), never another gap's newer clone", async () => {
+    const inputs = SCHEMA.inputs
+    const XL = { "x-latest": { shapes: ["gitCommitResult", "gitWorktree", "gitDiff"], moves: ["gitCommitResult", "gitWorktree"], same: "cwd", field: "tree", continues: "gap_id" } }
+    ;(SCHEMA as any).inputs = ["world_changed", { shape: "gitDiff", latest_by: "shape", where: { tree: XL, role: "walk" } }]
+    const tool = (id: string, seq: number, shape: string, cwd: string, cites: string, extra: Record<string, unknown> = {}) =>
+      ({ shape, id, seq, role: "walk", call_id: `c-${id}`, cwd, input_refs: [cites], ...extra })
+    const rows = [
+      { shape: "gap", id: "gA", seq: 30, role: "detector", gap_id: "the-gap", input_refs: [] },
+      { shape: "gap", id: "gD", seq: 31, role: "detector", gap_id: "another-gap", input_refs: [] },
+      { shape: "gap", id: "gR", seq: 40, role: "detector", gap_id: "the-gap", input_refs: [] }, // opened again: no clone of its own
+      tool("wtA", 32, "gitWorktree", "/a", "gA"),
+      tool("kA", 33, "gitCommitResult", "/a", "gA", { tree: "TREE_A" }),
+      tool("dA2", 34, "gitDiff", "/a", "gA", { tree: "TREE_A", diff: "DIFF_OF_THE_GAP" }),
+      tool("wtD", 35, "gitWorktree", "/d", "gD"), // another gap's clone, newer
+      { shape: "selection", id: "s-w", seq: 41, role: "walk", root: "gR" },
+    ]
+    INPUTS.push(...(rows as any))
+    const r = await askWith(["w1", ...rows.map((x) => x.id)])
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).inputs = inputs
+    expect(r.prompt.includes("DIFF_OF_THE_GAP")).toBe(true)
   })
 
   test("[MUST-FAIL] a whole row the context budget cannot hold is left out and counted, never cut to fit", async () => {

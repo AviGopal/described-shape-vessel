@@ -256,9 +256,10 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ctx
     delete (SCHEMA as any).keep_share
     REQUIRES_ROWS = []
+    // only the calls this produce made: the vessel's own discovery traffic (register, heartbeat) carries no pointer
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
-    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     return { status: r.status, prompt, row }
   }
 
@@ -317,10 +318,11 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ctx; (SCHEMA as any).inputs = ins
     delete (SCHEMA as any).keep_share
     REQUIRES_ROWS = []
+    // only the calls this produce made: the vessel's own discovery traffic (register, heartbeat) carries no pointer
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
     const edited = fx.rows.find((x) => x.edited)!.id
-    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     expect([r.status, prompt.includes("EDITED_REAL_FILE"), (row?.input_refs as string[] | undefined)?.includes(edited)]).toEqual([200, true, true])
   })
 

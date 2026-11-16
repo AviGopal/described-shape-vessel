@@ -132,10 +132,10 @@ describe("described-shape vessel", () => {
       expect(c.path).toBe("/resolve")
       expect(c.auth).toBe(`ApiKey ${NODE_KEY}`)
     }
-    const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    const llm = calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
     expect(llm.pointer.model).toBe("model-asked")
     expect(typeof llm.pointer.prompt).toBe("string")
-    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const w = calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(w.pointer.writer).toBe("described-test")
     expect(w.pointer.role).toBe("described")
     expect(w.pointer.row).toMatchObject({ text: "hi", shape: "answer", selection_ref: "sel-1", call_id: "call-1", producer: "model-served" })
@@ -147,11 +147,11 @@ describe("described-shape vessel", () => {
     const before = discovery.seen.length
     expect((await produce(NODE_KEY)).status).toBe(200)
     const calls = discovery.seen.slice(before)
-    const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    const llm = calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
     expect(llm.pointer.prompt).toContain("the question")
     expect(llm.pointer.prompt).toContain("data a request fetched")
     expect(llm.pointer.prompt).not.toContain("a draft answer")
-    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const w = calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
   })
 
@@ -166,13 +166,13 @@ describe("described-shape vessel", () => {
     readsDown = false
     delete (SCHEMA as any).reads
     expect(ok.status).toBe(200)
-    expect(calls.some((c) => c.path === "/resolve" && (c.body as any).pointer.type === "shapeDescriptions")).toBe(true)
-    const llm = calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    expect(calls.some((c) => c.path === "/resolve" && (c.body as any)?.pointer?.type === "shapeDescriptions")).toBe(true)
+    const llm = calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
     expect(llm.pointer.prompt).toContain("produces file content from a path")
-    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const w = calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(w.pointer.row.input_refs).toEqual(["w1", "h1"])
     expect(down.status).toBe(503)
-    expect(downCalls.some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
+    expect(downCalls.some((c) => (c.body as any)?.pointer?.type === "llm_completion")).toBe(false)
   })
 
   test("[MUST-FAIL] a produce asking for a schema variant applies that variant's newest row; one asking for none, the plain row", async () => {
@@ -180,7 +180,7 @@ describe("described-shape vessel", () => {
     const prompt = async (more: Record<string, unknown>) => {
       const before = discovery.seen.length
       const r = await produce(NODE_KEY, more)
-      const llm = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+      const llm = discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
       return { status: r.status, prompt: String(llm?.pointer?.prompt ?? "") }
     }
     const fromGap = await prompt({ variant: "gap", input_refs: ["g1", "h1"] })
@@ -204,8 +204,8 @@ describe("described-shape vessel", () => {
     const r = await produce(NODE_KEY, { input_refs: ["w1", ...hops.map((h) => h.id)] })
     INPUTS.splice(INPUTS.length - hops.length, hops.length)
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
-    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const w = calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(r.status).toBe(200)
     expect(prompt).toContain("the question") // the input, whole
     expect(prompt).toContain("step-69.") // the newest
@@ -233,8 +233,8 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ctx
     delete (SCHEMA as any).keep_share
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
-    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     return { status: r.status, prompt, row }
   }
 
@@ -361,7 +361,7 @@ describe("described-shape vessel", () => {
     const before = discovery.seen.length
     await produce(NODE_KEY) // nothing left out: the model's 42 is not stored
     llmContent = keep
-    const small = (discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    const small = (discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     expect(big.row.context_omitted).toBeGreaterThan(0)
     expect(big.row.oldest_shown_seq).not.toBe(1)
     expect(small.context_omitted).toBe(0)
@@ -381,7 +381,7 @@ describe("described-shape vessel", () => {
     await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
     INPUTS.splice(INPUTS.length - rows.length, rows.length)
     ;(SCHEMA as any).context = ctx
-    const prompt = String((discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const prompt = String((discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
     expect(prompt).not.toContain("zzzzzzzzzz") // the one that did not fit is left out
     expect(prompt).toContain("small-2.") // and the fill went on past it
   })
@@ -393,7 +393,7 @@ describe("described-shape vessel", () => {
     const r = await produce(NODE_KEY)
     ;(SCHEMA as any).inputs = keep
     expect(r.status).toBe(422)
-    expect(discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
+    expect(discovery.seen.slice(before).some((c) => (c.body as any)?.pointer?.type === "llm_completion")).toBe(false)
   })
 
   test("JSON is read bare, from a fenced block, or from a fenced block with prose around it", async () => {
@@ -416,7 +416,7 @@ describe("described-shape vessel", () => {
     llmContent = "Example:\n```json\n" + JSON.stringify({ text: "example" }) + "\n```\nAnswer:\n```json\n" + JSON.stringify({ text: "real" }) + "\n```"
     const before = discovery.seen.length
     const r = await produce(NODE_KEY)
-    const wrote = discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "record_write")
+    const wrote = discovery.seen.slice(before).some((c) => (c.body as any)?.pointer?.type === "record_write")
     llmContent = JSON.stringify({ text: "hi" })
     expect(r.status).toBe(422)
     expect(wrote).toBe(false)
@@ -464,8 +464,8 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = keep
     INPUTS.splice(INPUTS.length - hops.length, hops.length)
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
-    const w = calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const w = calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(r.status).toBe(200)
     expect(prompt).toContain("what fs_read returned")
     expect(prompt).toContain("what the template run returned")
@@ -484,7 +484,7 @@ describe("described-shape vessel", () => {
       type: "object", required: ["r", "evidence_refs"],
       properties: { r: { enum: [0, 1] }, evidence_refs: { type: "array", items: { type: "string", "x-shown": true } } },
     }
-    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write")
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any)?.pointer?.type === "record_write")
     const before = writes().length
     llmContent = JSON.stringify({ r: 0, evidence_refs: ["d1"] })
     const judged = await produce(NODE_KEY)
@@ -509,7 +509,7 @@ describe("described-shape vessel", () => {
       type: "object", required: ["evidence_refs"],
       properties: { evidence_refs: { type: "array", items: { type: "string", "x-shown": true } } },
     }
-    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write")
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any)?.pointer?.type === "record_write")
     const answer = async (ref: string, refs: string[]) => {
       llmContent = JSON.stringify({ evidence_refs: [ref] })
       return produce(NODE_KEY, { input_refs: refs })
@@ -541,8 +541,8 @@ describe("described-shape vessel", () => {
     const r = await produce(NODE_KEY)
     delete (SCHEMA as any).reads
     const calls = discovery.seen.slice(before)
-    const read = calls.find((c) => (c.body as any).pointer.type === "record_lapsed")?.body as any
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const read = calls.find((c) => (c.body as any)?.pointer?.type === "record_lapsed")?.body as any
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
     expect(r.status).toBe(200)
     expect(read.pointer.asks).toEqual(["w1"])
     expect(prompt).toContain('"d1"')
@@ -558,7 +558,7 @@ describe("described-shape vessel", () => {
         shape: { type: "string", "x-shape-in": { read: "shapeDescriptions", keys_of: "content.shape_descriptions" } },
       } } } },
     }
-    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any).pointer.type === "record_write").length
+    const writes = () => discovery.seen.filter((c) => c.path === "/resolve" && (c.body as any)?.pointer?.type === "record_write").length
     const before = writes()
     llmContent = JSON.stringify({ calls: [{ shape: "fs_read" }, { shape: "wait-for" }] })
     const kind = await produce(NODE_KEY)
@@ -593,11 +593,11 @@ describe("described-shape vessel", () => {
     })
     INPUTS.pop()
     expect(r.status).toBe(200)
-    const llm = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
+    const llm = discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
     expect(llm.pointer.prompt.length).toBeLessThan(40_000)
     expect(llm.pointer.prompt).toContain('"cut":true')
     expect(llm.pointer.prompt).toContain("data a request fetched") // a small row is shown whole
-    const w = discovery.seen.slice(before).find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const w = discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     expect(w.pointer.row.input_refs).toContain("h-big") // still counted as used
   })
 
@@ -608,8 +608,8 @@ describe("described-shape vessel", () => {
       body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ids, selection_ref: "s-w", call_id: "c" } } }),
     })
     const seen = discovery.seen.slice(before)
-    const llm = seen.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any
-    const w = seen.find((c) => (c.body as any).pointer.type === "record_write")?.body as any
+    const llm = seen.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any
+    const w = seen.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any
     return { status: r.status, prompt: String(llm?.pointer.prompt ?? ""), cited: (w?.pointer.row.input_refs ?? []) as string[] }
   }
   const WHOLE = { shape: "fileContent", whole: true, latest_by: "path", covers: { shape: "hop", on: "call_id" } }
@@ -711,7 +711,7 @@ describe("described-shape vessel", () => {
     INPUTS.pop()
     expect(r.status).toBe(422)
     expect(((await r.json()) as any).failure.body).toContain("w-huge")
-    expect(discovery.seen.slice(before).some((c) => (c.body as any).pointer.type === "llm_completion")).toBe(false)
+    expect(discovery.seen.slice(before).some((c) => (c.body as any)?.pointer?.type === "llm_completion")).toBe(false)
   })
 
   test("[MUST-FAIL] a call naming no channel is refused by name, not a 500", async () => {
@@ -866,7 +866,7 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ctx
     delete (SCHEMA as any).keep_share
     const calls = discovery.seen.slice(before)
-    return { status: r.status, prompt: String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "") }
+    return { status: r.status, prompt: String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "") }
   }
 
   test("[MUST-FAIL] with request_acts kept newest-only (the seed's entry), the request's clone and commit are shown past 76 growing acts rows", async () => {
@@ -895,9 +895,9 @@ describe("described-shape vessel", () => {
     INPUTS.splice(INPUTS.length - 2, 2)
     ;(SCHEMA as any).context = ctx
     const calls = discovery.seen.slice(before)
-    const prompt = String((calls.find((c) => (c.body as any).pointer.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
     expect(prompt).toContain("END_OF_FILE")
-    const row = (calls.find((c) => (c.body as any).pointer.type === "record_write")?.body as any)?.pointer?.row
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
     expect(row.input_refs).toContain("fc-read")
     expect(row.input_refs).not.toContain("h-read")
   })

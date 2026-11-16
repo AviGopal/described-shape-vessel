@@ -280,6 +280,13 @@ describe("described-shape vessel", () => {
     expect([r.prompt.includes("/trees/OWN_CLONE"), (r.row.input_refs as string[]).includes("gw-own"), r.prompt.includes("READ_B")]).toEqual([true, true, true])
   })
 
+  test("[MUST-FAIL] kept rows that fill their share never push out a required read: the edited file is still shown beside them", async () => {
+    // five clones of different repositories, ~46 KB of kept rows: nearly the whole 48 KB keep share
+    const clones = [1, 2, 3, 4, 5].map((i) => ({ shape: "gitWorktree", id: `gw-${i}`, seq: 40 + i, repo: `repo-${i}`, cwd: `/trees/CLONE_${i}`, input_refs: ["w1"], note: "c".repeat(9000) }))
+    const r = await reqRun({ reqs: [REQ], extra: clones, more: [{ shape: "gitWorktree", latest_by: "repo", keep: true }] })
+    expect([r.prompt.includes("EDITED_FILE_BODY"), (r.row.input_refs as string[]).includes("fc-edit"), clones.every((c) => (r.row.input_refs as string[]).includes(c.id))]).toEqual([true, true, true])
+  })
+
   test("[MUST-FAIL] with no requires row, one not the owner's, or no keep share, it is left to the budget (as before)", async () => {
     for (const o of [{ reqs: [] }, { reqs: [{ ...REQ, role: "described" }] }, { reqs: [REQ], share: 0 }]) {
       const r = await reqRun(o)

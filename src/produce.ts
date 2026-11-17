@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, inIn, matches, reachIn, shapeIn, shownIn, targetSourceOf, targetsOf } from "./check"
+import { check, equalsIn, inIn, malformedTarget, matches, reachIn, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
@@ -471,6 +471,11 @@ const make = async (p: Ask): Promise<Response> => {
   const rule = targetSourceOf(reach?.["x-reach"])
   if (rule !== undefined) {
     const targets = targetsOf(rule, all)
+    // A target the schema would have refused (a row from before it said what one is) holds no grade of 1: said by name.
+    const bad = targets.length > 0 && body.r === 1 ? malformedTarget(targets) : undefined
+    if (bad !== undefined) {
+      return refused(`r 1 cannot be held to the targets of ${rule.from} row ${String(targetRowOf(rule, all)?.id ?? "")}: ${bad}`)
+    }
     if (targets.length > 0 && body.r === 1) {
       const d = await resolve({ type: SHAPE_DESCRIPTIONS })
       if (!d.ok) {

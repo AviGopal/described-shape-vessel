@@ -889,6 +889,57 @@ describe("described-shape vessel", () => {
     expect([person.status, model.status]).toEqual([200, 422])
   })
 
+  test("[MUST-FAIL] targets are held to the producing schema when made: too many or malformed refused, an accepted row is what the judge reads", async () => {
+    // The owner's schema says what a target is and how many (items, maxItems): a row breaking it is refused (422, the
+    // producer told why), so the targets a person is shown are exactly those a grade is held to (check.ts targetsOf).
+    const { targetsOf } = await import("../src/check")
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = { type: "object", required: ["targets"], properties: { targets: { type: "array", minItems: 1, maxItems: 3,
+      items: { type: "object", required: ["shape"], additionalProperties: false, properties: { shape: { type: "string" }, where: { type: "object" } } } } } }
+    const make = async (targets: unknown) => {
+      llmContent = JSON.stringify({ targets })
+      const before = discovery.seen.length
+      const r = await askWith(["w1"])
+      const row = (discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer.row
+      return { status: r.status, row }
+    }
+    const four = await make([1, 2, 3, 4].map((n) => ({ shape: `s${n}` })))
+    const listWhere = await make([{ shape: "s", where: ["region"] }])
+    const ok = await make([{ shape: "uiViewState", where: { region: "landing", "view.drawsDefault": true } }])
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect([four.status, listWhere.status]).toEqual([422, 422])
+    expect([four.row, listWhere.row]).toEqual([undefined, undefined])
+    expect(ok.status).toBe(200)
+    expect(targetsOf({ from: "answer", field: "targets" }, [{ ...ok.row, shape: "answer", seq: 1 }])).toEqual(ok.row.targets)
+  })
+
+  test("[MUST-FAIL] a target the schema would refuse, on a row from before it, holds no grade of 1: refused by name", async () => {
+    const [inputs, ctx, schema, content] = [SCHEMA.inputs, (SCHEMA as any).context, SCHEMA.schema, llmContent]
+    const rows = [
+      { shape: "change_wanted", id: "cw-old", seq: 2, role: "described", targets: [{ shape: "uiViewState", where: ["region"] }], input_refs: ["w1"] },
+      { shape: "uiViewState", id: "vs-old2", seq: 3, role: "walk", call_id: "r", region: "landing" },
+    ]
+    INPUTS.push(...(rows as any))
+    ;(SCHEMA as any).inputs = ["world_changed"]
+    ;(SCHEMA as any).context = [{ "x-target": { from: "change_wanted", field: "targets" } }]
+    ;(SCHEMA as any).schema = { type: "object", required: ["r"], "x-reach": { from: "change_wanted", field: "targets" },
+      properties: { r: { type: "number" }, evidence_refs: { type: "array", items: { type: "string" } } } }
+    llmContent = JSON.stringify({ r: 1, evidence_refs: ["vs-old2"] })
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "cw-old", "vs-old2"], selection_ref: "s-w", call_id: "c" } } }),
+    })
+    const body = (await r.json()) as any
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).context = ctx
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(422)
+    expect(String(body?.failure?.body)).toContain("change_wanted row cw-old: target 0's where is not a map of fields to values")
+  })
+
   test("[MUST-FAIL] when the declarations cannot be read, a grade held to reach fails as the read's outage: no refusal, no row", async () => {
     // A discovery that cannot answer is not the model's wrong answer: reported as a schema refusal it would debit the
     // producer and tell it asking again is refused the same way (deployment). The grade fails with the read's status.

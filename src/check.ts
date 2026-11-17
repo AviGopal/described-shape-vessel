@@ -117,19 +117,31 @@ export const check = (schema: object, body: unknown): { ok: boolean; errors: str
 
 // AN ASK'S TARGET, AND REACH JUDGED ON IT. The owner's row a request's targets live in (x-target / x-reach: {from, field}:
 // the request's newest row of shape `from`, its field `field`) lists what would show the ask was met: rows of a shape,
-// holding values (where: dotted paths to plain values). Up to three; anything else in the list is not a target.
+// holding values (where: dotted paths to plain values). Read as written, never filtered: what a target may be and how
+// many are allowed is the producing schema's (items, maxItems), and a row breaking it is refused when it is made, so the
+// row a person is shown and the targets a grade is held to are the same list.
 export type Target = { shape: string; where?: Record<string, unknown> }
 export type TargetSource = { from: string; field: string }
 export const targetSourceOf = (x: unknown): TargetSource | undefined => {
   const o = typeof x === "object" && x !== null && !Array.isArray(x) ? x as Record<string, unknown> : undefined
   return o && typeof o.from === "string" && typeof o.field === "string" ? { from: o.from, field: o.field } : undefined
 }
+export const targetRowOf = (src: TargetSource, rows: Array<Record<string, unknown>>): Record<string, unknown> | undefined =>
+  rows.filter((r) => r.shape === src.from).sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0))[0]
+// A target the producing schema would have refused (a row written before the schema said what a target is): which one,
+// and why, so a grade held to it fails closed, said by name, never skipped and never a crash.
+export const malformedTarget = (targets: unknown[]): string | undefined => {
+  for (const [i, t] of targets.entries()) {
+    const o = typeof t === "object" && t !== null && !Array.isArray(t) ? t as Record<string, unknown> : undefined
+    if (o === undefined || typeof o.shape !== "string") return `target ${i} names no shape`
+    if (o.where !== undefined && (typeof o.where !== "object" || o.where === null || Array.isArray(o.where))) return `target ${i}'s where is not a map of fields to values`
+  }
+  return undefined
+}
 export const targetsOf = (src: TargetSource, rows: Array<Record<string, unknown>>): Target[] => {
-  const newest = rows.filter((r) => r.shape === src.from).sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0))[0]
+  const newest = targetRowOf(src, rows)
   const raw = newest?.[src.field]
-  if (!Array.isArray(raw)) return []
-  return raw.filter((t): t is Target => typeof t === "object" && t !== null && typeof (t as Target).shape === "string" &&
-    ((t as Target).where === undefined || (typeof (t as Target).where === "object" && !Array.isArray((t as Target).where)))).slice(0, 3)
+  return Array.isArray(raw) ? raw as Target[] : []
 }
 
 // An r of 1 on a request with targets must cite (in `cite`, ids) a row it was shown that meets one: of the target's shape,

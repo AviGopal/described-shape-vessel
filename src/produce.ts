@@ -490,12 +490,17 @@ const make = async (p: Ask): Promise<Response> => {
   const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
   // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one it
   // ignored. Always this vessel's count, never the model's: the same fields in what the model wrote are dropped.
-  const { context_omitted: _o, oldest_shown_seq: _s, ...said } = body as Record<string, unknown>
+  // And the request it was made for (root: the selection's root), on every row, so a reader can scope a request's rows
+  // exactly (a row's input_refs hold the whole pool it was shown, other requests' rows among them). The selection's,
+  // never the model's: a root in what the model wrote is dropped.
+  await rootOf()
+  const { context_omitted: _o, oldest_shown_seq: _s, root: _r, ...said } = body as Record<string, unknown>
   const row = {
     ...said,
     shape: p.shape,
     input_refs: cited,
     context_omitted: omitted,
+    ...(rootId ? { root: rootId } : {}),
     ...(shownSeqs.length > 0 ? { oldest_shown_seq: Math.min(...shownSeqs) } : {}),
     selection_ref: p.selection_ref,
     call_id: p.call_id,

@@ -885,6 +885,29 @@ describe("described-shape vessel", () => {
     expect([person.status, model.status]).toEqual([200, 422])
   })
 
+  test("[MUST-FAIL] every row written carries the request it was made for (root: the selection's), never a root the model wrote", async () => {
+    const content = llmContent
+    INPUTS.push({ shape: "selection", id: "s-root", seq: 1, role: "walk", root: "w1" } as any)
+    const write = async (said: Record<string, unknown>) => {
+      llmContent = JSON.stringify(said)
+      const before = discovery.seen.length
+      await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+        body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "h1"], selection_ref: "s-root", call_id: "c" } } }),
+      })
+      return (discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer.row
+    }
+    const plain = await write({ text: "t" })
+    const forged = await write({ text: "t", root: "w-other" })
+    ;(INPUTS[INPUTS.length - 1] as any).root = undefined // a selection naming no root: the model's root is still dropped
+    const rootless = await write({ text: "t", root: "w-other" })
+    INPUTS.splice(INPUTS.length - 1, 1)
+    llmContent = content
+    expect(plain?.root).toBe("w1")
+    expect(forged?.root).toBe("w1")
+    expect(rootless !== undefined && "root" in rootless).toBe(false)
+  })
+
   test("[MUST-FAIL] a value the schema says is one of what shown rows hold (x-in) must be one of them; read through an owner-marked read", async () => {
     const [schema, content] = [SCHEMA.schema, llmContent]
     ;(SCHEMA as any).schema = {

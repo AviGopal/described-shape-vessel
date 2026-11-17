@@ -842,6 +842,9 @@ describe("described-shape vessel", () => {
       { shape: "hop", id: "hs-r1", seq: 8, role: "walk", phase: "started", call_id: "r1", pointer_type: "human_surface:ui_view" },
       { shape: "uiViewState", id: "vs-new", seq: 9, role: "walk", call_id: "r1", region: "landing", view: { drawsDefault: true } },
       { shape: "uiViewState", id: "vs-other", seq: 10, role: "walk", call_id: "r1", region: "landing", view: { drawsDefault: false } },
+      // a producer's own row of the target shape (role described), newer than the change, naming a reading call's id: a
+      // model wrote it, so it is no read whatever call it names
+      { shape: "uiViewState", id: "vs-model", seq: 11, role: "described", call_id: "r1", region: "landing", view: { drawsDefault: true } },
     ]
     INPUTS.push(...(rows as any))
     ;(SCHEMA as any).inputs = ["world_changed"]
@@ -861,6 +864,7 @@ describe("described-shape vessel", () => {
     const before = await grade(1, ["vs-old"]) // a read made before the change
     const unmet = await grade(1, ["vs-other"]) // a read after it that does not hold the target
     const claim = await grade(1, ["hs-w"]) // the change's hop alone
+    const modelRow = await grade(1, ["vs-model"]) // a row a producer wrote, not the walk's record of a read
     const zero = await grade(0, [])
     // with no target listed, a grade is held to nothing new (as before)
     ;(rows[0] as any).targets = undefined
@@ -879,10 +883,43 @@ describe("described-shape vessel", () => {
     expect(after.status).toBe(200)
     expect(after.prompt).toContain("vs-new") // the target rows are shown (x-target), the unmet one too
     expect(after.prompt).toContain("vs-other")
-    expect([own.status, ownDeclared.status, before.status, unmet.status, claim.status]).toEqual([422, 422, 422, 422, 422])
+    expect([own.status, ownDeclared.status, before.status, unmet.status, claim.status, modelRow.status]).toEqual([422, 422, 422, 422, 422, 422])
     expect(zero.status).toBe(200)
     expect(untargeted.status).toBe(200)
     expect([person.status, model.status]).toEqual([200, 422])
+  })
+
+  test("[MUST-FAIL] when the declarations cannot be read, a grade held to reach fails as the read's outage: no refusal, no row", async () => {
+    // A discovery that cannot answer is not the model's wrong answer: reported as a schema refusal it would debit the
+    // producer and tell it asking again is refused the same way (deployment). The grade fails with the read's status.
+    const [inputs, ctx, schema, content] = [SCHEMA.inputs, (SCHEMA as any).context, SCHEMA.schema, llmContent]
+    const rows = [
+      { shape: "change_wanted", id: "cw-down", seq: 2, role: "described", targets: [{ shape: "uiViewState" }], input_refs: ["w1"] },
+      { shape: "uiViewState", id: "vs-down", seq: 3, role: "walk", call_id: "r", region: "landing" },
+    ]
+    INPUTS.push(...(rows as any))
+    ;(SCHEMA as any).inputs = ["world_changed"]
+    ;(SCHEMA as any).context = [{ "x-target": { from: "change_wanted", field: "targets" } }]
+    ;(SCHEMA as any).schema = { type: "object", required: ["r"], "x-reach": { from: "change_wanted", field: "targets" },
+      properties: { r: { type: "number" }, evidence_refs: { type: "array", items: { type: "string" } } } }
+    llmContent = JSON.stringify({ r: 1, evidence_refs: ["vs-down"] })
+    readsDown = true
+    const before = discovery.seen.length
+    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "cw-down", "vs-down"], selection_ref: "s-w", call_id: "c" } } }),
+    })
+    const body = (await r.json()) as any
+    const wrote = discovery.seen.slice(before).some((c) => (c.body as any)?.pointer?.type === "record_write")
+    readsDown = false
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).context = ctx
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(503)
+    expect(body?.failure?.refused).toBeUndefined()
+    expect(wrote).toBe(false)
   })
 
   test("[MUST-FAIL] every row written carries the request it was made for (root: the selection's), never a root the model wrote", async () => {

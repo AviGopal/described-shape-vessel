@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, inIn, matches, shapeIn, shownIn } from "./check"
+import { check, equalsIn, inIn, matches, reachIn, shapeIn, shownIn, targetSourceOf, targetsOf } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
-import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_SCHEMA } from "./shapes"
+import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
 
 type Row = { id: string; [k: string]: unknown }
 type ChannelCall = {
@@ -191,7 +191,15 @@ const make = async (p: Ask): Promise<Response> => {
     return { ...(e as object), where: w }
   }
   if (hasLatest([schema.inputs, schema.context])) await rootOf()
-  const wanted = [schema.inputs, schema.context ?? []].flat().map(resolve_)
+  // A context entry {"x-target": {from, field}} stands for the request's own rows of its target shapes: those the
+  // request's newest `from` row lists in `field` (check.ts targetsOf), one entry per shape, all of its rows (a grader
+  // judging whether a target holds is shown the rows that do not hold it too). No shape is named here; with no targets
+  // listed, it shows nothing.
+  const expand = (e: unknown): unknown[] => {
+    const src = typeof e === "object" && e !== null && !Array.isArray(e) ? targetSourceOf((e as Record<string, unknown>)["x-target"]) : undefined
+    return src === undefined ? [e] : [...new Set(targetsOf(src, all).map((t) => t.shape))]
+  }
+  const wanted = [schema.inputs, schema.context ?? []].flat().flatMap(expand).map(resolve_)
   let used = all.flatMap((r) => {
     const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
     if (e === undefined) return []
@@ -452,6 +460,32 @@ const make = async (p: Ask): Promise<Response> => {
   const outside_ = inIn(schema.schema, body, marked)
   if (outside_.length > 0) {
     return refused(outside_.join("; ").slice(0, 1000))
+  }
+  // And a grade of 1 on a request with targets (x-reach: {from, field, r?, cite?} on the schema) must cite a shown row
+  // meeting one, read after the newest change of it (check.ts reachIn): reach is the effect, not the claim or the
+  // changing call's own reply. Which calls answer with a shape and which change it are the vessels' declarations
+  // (discovery's shapeDescriptions read), read here only when the rule applies.
+  const reach = schema.schema as Record<string, unknown> | null
+  const rule = targetSourceOf(reach?.["x-reach"])
+  if (rule !== undefined) {
+    const o = reach?.["x-reach"] as Record<string, unknown>
+    const [rField, cite] = [typeof o.r === "string" ? o.r : "r", typeof o.cite === "string" ? o.cite : "evidence_refs"]
+    const targets = targetsOf(rule, all)
+    if (targets.length > 0 && body[rField] === 1) {
+      const d = await resolve({ type: SHAPE_DESCRIPTIONS })
+      if (!d.ok) {
+        return fail(d.status, d.text, unservedOf(d.text))
+      }
+      const dc = (d.body as { content?: unknown } | null)?.content ?? d.body
+      const map = <T,>(k: string): Record<string, T> => {
+        const v = (dc as Record<string, unknown> | null)?.[k]
+        return typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, T> : {}
+      }
+      const missed = reachIn(targets, body[cite], seen, all, map<string>("shape_answers"), map<string[]>("shape_changes"))
+      if (missed !== undefined) {
+        return refused(missed)
+      }
+    }
   }
   const shownSeqs = used.filter((r) => fitted.has(r.id) && typeof r.seq === "number").map((r) => Number(r.seq))
   // What the context budget left out, kept on the row so a reader can tell a row the producer was not shown from one it

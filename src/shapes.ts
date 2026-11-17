@@ -9,3 +9,5 @@ export const AUTHENTICATION = "authentication"
 export const DESCRIBED = "described"
 export const REQUIRES = "requires"
 export const OWNER = "owner"
+// Discovery's read of the vessels' declarations: what each call answers with, and which shapes it changes.
+export const SHAPE_DESCRIPTIONS = "shapeDescriptions"

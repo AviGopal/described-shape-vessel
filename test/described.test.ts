@@ -51,6 +51,8 @@ let vesselErr = ""
 // discovery's own answer when no producer serves the model's shape (it never reached a resolver)
 let llmUnrouted = false
 let readsDown = false
+// What the vessels declare, as discovery's shapeDescriptions read carries it: what each call answers with, what it changes
+let DECL: { shape_answers?: Record<string, string>; shape_changes?: Record<string, string[]> } = {}
 let discovery: Fake
 let identity: Fake
 let port: number
@@ -67,7 +69,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "record_read") return Response.json(INPUTS.filter((r) => (p.ids as string[]).includes(r.id)))
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
-    : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" } } })
+    : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" }, ...DECL } })
   if (p.type === "record_lapsed") return Response.json(LAPSED.filter((r) => !Array.isArray(p.asks) || r.input_refs.some((id) => p.asks.includes(id))))
   if (p.type === "llm_completion" && llmUnrouted) return Response.json({ error: "Not found", shape: "llm_completion", unserved: "llm_completion" }, { status: 404 })
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
@@ -821,6 +823,66 @@ describe("described-shape vessel", () => {
     llmContent = content
     expect(lie.status).toBe(422)
     expect(truth.status).toBe(200)
+  })
+
+  test("[MUST-FAIL] a grade of 1 on a request with targets must cite a read of the target made after the change, never the change's own reply", async () => {
+    // b8277fa0's shape: an ask to put the view back to its default; its change_wanted names the target; a read before the
+    // change, the change (whose reply says the view is the default), and a read after it. Which call answers with the
+    // view and which changes it are the vessels' declarations (discovery), not names here.
+    const [inputs, ctx, schema, content] = [SCHEMA.inputs, (SCHEMA as any).context, SCHEMA.schema, llmContent]
+    DECL = { shape_answers: { "human_surface:ui_view": "uiViewState" }, shape_changes: { uiView_write: ["uiViewState"] } }
+    const target = { shape: "uiViewState", where: { region: "landing", "view.drawsDefault": true } }
+    const rows = [
+      { shape: "change_wanted", id: "cw-t", seq: 2, role: "described", wanted: false, targets: [target], input_refs: ["w1"] },
+      { shape: "hop", id: "hs-r0", seq: 3, role: "walk", phase: "started", call_id: "r0", pointer_type: "human_surface:ui_view" },
+      { shape: "uiViewState", id: "vs-old", seq: 4, role: "walk", call_id: "r0", region: "landing", view: { drawsDefault: true } },
+      { shape: "hop", id: "hs-w", seq: 5, role: "walk", phase: "started", call_id: "w", pointer_type: "uiView_write" },
+      { shape: "uiViewState", id: "vs-own", seq: 6, role: "walk", call_id: "w", region: "landing", view: { drawsDefault: true } },
+      { shape: "failure", id: "f-w", seq: 7, role: "walk", call_id: "w", status: 422 }, // the change failed
+      { shape: "hop", id: "hs-r1", seq: 8, role: "walk", phase: "started", call_id: "r1", pointer_type: "human_surface:ui_view" },
+      { shape: "uiViewState", id: "vs-new", seq: 9, role: "walk", call_id: "r1", region: "landing", view: { drawsDefault: true } },
+      { shape: "uiViewState", id: "vs-other", seq: 10, role: "walk", call_id: "r1", region: "landing", view: { drawsDefault: false } },
+    ]
+    INPUTS.push(...(rows as any))
+    ;(SCHEMA as any).inputs = ["world_changed"]
+    ;(SCHEMA as any).context = ["hop", { "x-target": { from: "change_wanted", field: "targets" } }]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["r", "evidence_refs"], "x-reach": { from: "change_wanted", field: "targets" },
+      properties: { r: { type: "number" }, evidence_refs: { type: "array", items: { type: "string" } } },
+    }
+    const ids = ["w1", ...rows.map((r) => r.id)]
+    const grade = async (r: number, cite: string[]) => { llmContent = JSON.stringify({ r, evidence_refs: cite }); return askWith(ids) }
+    const after = await grade(1, ["vs-new"]) // a read after the change, holding the target: reached, the failed change notwithstanding
+    const own = await grade(1, ["vs-own"]) // the change's own reply
+    // even when the changing call also declares it answers with the shape (its reply reads the state back): still its own
+    DECL = { shape_answers: { "human_surface:ui_view": "uiViewState", uiView_write: "uiViewState" }, shape_changes: { uiView_write: ["uiViewState"] } }
+    const ownDeclared = await grade(1, ["vs-own"])
+    DECL = { shape_answers: { "human_surface:ui_view": "uiViewState" }, shape_changes: { uiView_write: ["uiViewState"] } }
+    const before = await grade(1, ["vs-old"]) // a read made before the change
+    const unmet = await grade(1, ["vs-other"]) // a read after it that does not hold the target
+    const claim = await grade(1, ["hs-w"]) // the change's hop alone
+    const zero = await grade(0, [])
+    // with no target listed, a grade is held to nothing new (as before)
+    ;(rows[0] as any).targets = undefined
+    const untargeted = await grade(1, ["hs-w"])
+    // a target no call answers with (a person's grade) is met by the row itself
+    ;(rows[0] as any).targets = [{ shape: "outcome", where: { role: "person", r: 1 } }]
+    INPUTS.push({ shape: "outcome", id: "o-p", seq: 11, role: "person", r: 1 } as any, { shape: "outcome", id: "o-d", seq: 12, role: "described", r: 1 } as any)
+    const person = (llmContent = JSON.stringify({ r: 1, evidence_refs: ["o-p"] }), await askWith([...ids, "o-p", "o-d"]))
+    const model = (llmContent = JSON.stringify({ r: 1, evidence_refs: ["o-d"] }), await askWith([...ids, "o-p", "o-d"]))
+    INPUTS.splice(INPUTS.length - rows.length - 2, rows.length + 2)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).context = ctx
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    DECL = {}
+    expect(after.status).toBe(200)
+    expect(after.prompt).toContain("vs-new") // the target rows are shown (x-target), the unmet one too
+    expect(after.prompt).toContain("vs-other")
+    expect([own.status, ownDeclared.status, before.status, unmet.status, claim.status]).toEqual([422, 422, 422, 422, 422])
+    expect(zero.status).toBe(200)
+    expect(untargeted.status).toBe(200)
+    expect([person.status, model.status]).toEqual([200, 422])
   })
 
   test("[MUST-FAIL] a value the schema says is one of what shown rows hold (x-in) must be one of them; read through an owner-marked read", async () => {

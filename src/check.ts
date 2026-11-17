@@ -114,3 +114,51 @@ export const check = (schema: object, body: unknown): { ok: boolean; errors: str
   }
   return { ok: true, errors: "" }
 }
+
+// AN ASK'S TARGET, AND REACH JUDGED ON IT. The owner's row a request's targets live in (x-target / x-reach: {from, field}:
+// the request's newest row of shape `from`, its field `field`) lists what would show the ask was met: rows of a shape,
+// holding values (where: dotted paths to plain values). Up to three; anything else in the list is not a target.
+export type Target = { shape: string; where?: Record<string, unknown> }
+export type TargetSource = { from: string; field: string }
+export const targetSourceOf = (x: unknown): TargetSource | undefined => {
+  const o = typeof x === "object" && x !== null && !Array.isArray(x) ? x as Record<string, unknown> : undefined
+  return o && typeof o.from === "string" && typeof o.field === "string" ? { from: o.from, field: o.field } : undefined
+}
+export const targetsOf = (src: TargetSource, rows: Array<Record<string, unknown>>): Target[] => {
+  const newest = rows.filter((r) => r.shape === src.from).sort((a, b) => Number(b.seq ?? 0) - Number(a.seq ?? 0))[0]
+  const raw = newest?.[src.field]
+  if (!Array.isArray(raw)) return []
+  return raw.filter((t): t is Target => typeof t === "object" && t !== null && typeof (t as Target).shape === "string" &&
+    ((t as Target).where === undefined || (typeof (t as Target).where === "object" && !Array.isArray((t as Target).where)))).slice(0, 3)
+}
+
+// An r of 1 on a request with targets must cite (in `cite`, ids) a row it was shown that meets one: of the target's shape,
+// holding its where values, and read after the change. Read: when some call declares it answers with that shape
+// (shape_answers), the row is a call's answer (the walk's, with a call_id) whose call so declares and does not also
+// declare it changes it (shape_changes): a changing call's own reply is the change reporting on itself, never its effect.
+// After: newer than the newest started call, failed or not, of any type that declares it changes that shape; a change
+// that failed while the target already held is reached, since the effect is there. A shape no call answers with (a
+// person's grade) is met by the row itself. Returns the refusal, or undefined when met. Names no shape.
+export const reachIn = (targets: Target[], cited: unknown, shown: Array<Record<string, unknown>>, all: Array<Record<string, unknown>>,
+  answers: Record<string, string>, changes: Record<string, string[]>): string | undefined => {
+  const started = all.filter((h) => h.shape === "hop" && h.phase === "started")
+  const typeOf = new Map(started.map((h) => [String(h.call_id), String(h.pointer_type)]))
+  const ids = new Set([cited ?? []].flat().map(String))
+  const answered = new Set(Object.values(answers))
+  const changedAt = (shape: string): number =>
+    Math.max(-Infinity, ...started.filter((h) => (changes[String(h.pointer_type)] ?? []).includes(shape)).map((h) => Number(h.seq ?? 0)))
+  const meets = (r: Record<string, unknown>, t: Target): boolean =>
+    r.shape === t.shape && Object.entries(t.where ?? {}).every(([k, v]) => JSON.stringify(at_(r, k)) === JSON.stringify(v))
+  const readOf = (r: Record<string, unknown>, shape: string): boolean => {
+    if (!answered.has(shape)) return true
+    const type = typeOf.get(String(r.call_id))
+    return r.role === "walk" && type !== undefined && answers[type] === shape && !(changes[type] ?? []).includes(shape)
+  }
+  for (const r of shown.filter((x) => ids.has(String(x.id)))) {
+    for (const t of targets) {
+      if (meets(r, t) && readOf(r, t.shape) && Number(r.seq ?? 0) > changedAt(t.shape)) return undefined
+    }
+  }
+  const said = targets.map((t) => `${t.shape}${t.where ? ` ${JSON.stringify(t.where)}` : ""}`).join(" or ")
+  return `r 1 needs a cited row it was shown of ${said}, read after the newest change of it; none cited is one`
+}

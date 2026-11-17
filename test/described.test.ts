@@ -1145,6 +1145,71 @@ describe("described-shape vessel", () => {
     expect(named.map((x) => [x.shape, x.id, x.path])).toEqual([["fileContent", "fc-c", "/c.ts"]])
   })
 
+  // The owner seed's request entries: the clone kept, then the clone's newest diff, whole, kept and covering its own hop.
+  const XLT = { "x-latest": { shapes: ["gitCommitResult", "gitWorktree", "gitDiff"], moves: ["gitCommitResult", "gitWorktree"], same: "cwd", field: "tree" } }
+  const keptRun = async (context: unknown[], rows: Array<Record<string, unknown>>) => {
+    const saved = SCHEMA.context
+    ;(SCHEMA as any).context = context
+    ;(SCHEMA as any).keep_share = 0.25
+    INPUTS.push(...(rows as any))
+    try {
+      const r = await askWith(["w1", ...rows.map((x) => String(x.id))])
+      const named = ((JSON.parse(r.prompt) as { not_shown_whole?: Array<Record<string, unknown>> }).not_shown_whole ?? []).map((x) => x.id)
+      return { ...r, named }
+    } finally {
+      INPUTS.splice(INPUTS.length - rows.length, rows.length)
+      ;(SCHEMA as any).context = saved
+      delete (SCHEMA as any).keep_share
+    }
+  }
+  const newerHops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hk${i}`, seq: 100 + i, output: { text: `kstep-${i}. ` + "x".repeat(3000) } }))
+
+  test("[MUST-FAIL] kept rows are fitted in the order the owner lists their entries: a large diff never pushes out the clone listed before it", async () => {
+    const context = ["hop", "failure", { shape: "gitWorktree", latest_by: "repo", keep: true },
+      { shape: "gitDiff", latest_by: "shape", where: { tree: XLT, role: "walk" }, whole: true, keep: true, covers: { shape: "hop", on: "call_id" } }]
+    const base = [
+      { shape: "selection", id: "s-w", seq: 9, role: "walk", root: "w1" }, // the produce's own selection names the request
+      { shape: "gitWorktree", id: "gw-own", seq: 50, role: "walk", call_id: "c-w", repo: "hsv", cwd: "/trees/OWN_CLONE", tree: "TREE_K", input_refs: ["w1"], note: "c".repeat(1000) },
+    ]
+    const diffOf = (bytes: number) => ({ shape: "gitDiff", id: "gd-own", seq: 60, role: "walk", call_id: "c-d", cwd: "/trees/OWN_CLONE", tree: "TREE_K",
+      input_refs: ["w1"], diff: "d".repeat(bytes), check: { passed: false, out: "CHECK_SAID_WHY" } })
+    // a diff that fits the keep share alone but not beside the clone (the share is a quarter of the context budget):
+    // listed after the clone, it is the one left out, and named, since its entry shows it whole; never the clone
+    const tight = await keptRun(context, [...base, diffOf(48_500), ...newerHops])
+    expect(tight.status).toBe(200)
+    expect(tight.prompt).toContain("OWN_CLONE")
+    expect(tight.prompt.includes("CHECK_SAID_WHY") || tight.named.includes("gd-own")).toBe(true)
+    expect(tight.prompt).not.toContain('"cut":true')
+    expect(tight.named).toContain("gd-own")
+    // a diff that fits beside the clone: both are shown, the diff whole with what its check said
+    const fits = await keptRun(context, [...base, diffOf(40_000), ...newerHops])
+    expect(fits.prompt).toContain("OWN_CLONE")
+    expect(fits.prompt).toContain("CHECK_SAID_WHY")
+  })
+
+  test("[GUARD] with one kept entry, its rows are fitted newest first, as before", async () => {
+    // a schema with a single kept entry (the outcome grader's request_acts) fits exactly what it did before the order:
+    // the newest rows of the entry while they fit, the oldest left to the budget, which the newer hops have spent
+    const acts = Array.from({ length: 8 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 40 + i, role: "walk", input_refs: ["w1"], note: `ACTS_${i} ` + "a".repeat(9000) }))
+    const r = await keptRun(["hop", { shape: "request_acts", where: {}, keep: true }], [...acts, ...newerHops])
+    expect(r.status).toBe(200)
+    expect([7, 6, 5].map((i) => r.prompt.includes(`ACTS_${i} `))).toEqual([true, true, true])
+    expect([0, 1].map((i) => r.prompt.includes(`ACTS_${i} `))).toEqual([false, false])
+  })
+
+  test("[GUARD] the answer schema's kept entries, in their order, still show the newest skip", async () => {
+    // request_acts (newest only) is listed before the walk's skip failures (newest per request): fitted first, it takes
+    // one row of the share, and the skips that follow are fitted newest first in what remains
+    const acts = { shape: "request_acts", id: "ra-n", seq: 45, role: "walk", input_refs: ["w1"], note: "ACTS_NEWEST " + "a".repeat(6000) }
+    const skips = Array.from({ length: 30 }, (_, i) => ({ shape: "failure", id: `fs${i}`, seq: 50 + i, role: "walk", kind: "skip",
+      request_ref: `rq${i}`, input_refs: ["w1"], body: `SKIP_${i} ` + "s".repeat(2000) }))
+    const r = await keptRun(["hop", { shape: "request_acts", latest_by: "shape", keep: true },
+      { shape: "failure", where: { kind: "skip" }, latest_by: "request_ref", keep: true }], [acts, ...skips, ...newerHops])
+    expect(r.status).toBe(200)
+    expect(r.prompt).toContain("ACTS_NEWEST")
+    expect(r.prompt).toContain("SKIP_29 ")
+  })
+
   test("[MUST-FAIL] an input row too big to show whole is refused by name, never cut", async () => {
     const huge = { shape: "world_changed", id: "w-huge", what: "y".repeat(200_000) }
     INPUTS.push(huge)
@@ -1322,9 +1387,12 @@ describe("described-shape vessel", () => {
     expect(r.prompt).toContain("act-75 ") // the newest acts row is still shown
   })
 
-  test("control: request_acts kept without latest_by (the parent seed's entry) leaves the clone out, as on d929", async () => {
+  test("[GUARD] request_acts kept without latest_by (the parent seed's entry) no longer leaves out the clone listed before it", async () => {
+    // on d929, 76 growing acts rows, fitted newest first across every kept entry, filled the keep share before the clone
+    // and commit; fitted in the order the owner lists the entries, the clone and commit, listed first, are fitted first
     const r = await actsRun({ shape: "request_acts", keep: true })
-    expect(r.prompt).not.toContain("/trees/D929_CLONE")
+    expect(r.prompt).toContain("/trees/D929_CLONE")
+    expect(r.prompt).toContain("COMMIT_2C73FC3")
   })
 
   test("[MUST-FAIL] a file read whole is shown whole in place of its cut hop (the seed's answer entry)", async () => {

@@ -335,8 +335,8 @@ const make = async (p: Ask): Promise<Response> => {
   }
   const fitted = new Set<string>()
   let spent = 0
-  const fill = (rs: Row[], budget: number): void => {
-    for (const r of newestFirst(rs)) {
+  const fill = (rs: Row[], budget: number, order: (rs: Row[]) => Row[] = newestFirst): void => {
+    for (const r of order(rs)) {
       if (fitted.has(r.id)) continue
       const size = JSON.stringify(shownAs(r)).length
       // a row that does not fit is left out and counted as not shown, never cut to fit; a smaller one may still
@@ -345,9 +345,13 @@ const make = async (p: Ask): Promise<Response> => {
       fitted.add(r.id)
     }
   }
-  // kept first, within its share, as before; the required rows then get a share of their own on top, so a call's large
-  // file reads never push out the request's clone or its commit (qa: one shared share starved the kept rows)
-  fill(kept, CONTEXT_BUDGET * share)
+  // kept first, within its share, in the order the owner lists their entries and newest first within one: the owner's
+  // list is the priority, so a large row of a later entry (a 46 KB diff) never pushes out a small one listed before it
+  // (the request's clone, where every call works), as one newest-first pass across entries did (qa). The required rows
+  // then get a share of their own on top, so a call's large file reads never push out the request's clone or its commit
+  // (qa: one shared share starved the kept rows)
+  const listed = (r: Row): number => wanted.findIndex((x) => matches(r, x))
+  fill(kept, CONTEXT_BUDGET * share, (rs) => newestFirst(rs).sort((a, b) => listed(a) - listed(b)))
   fill(required, spent + CONTEXT_BUDGET * share)
   // WHAT A SHOWN REFUSAL NAMES COMES WITH IT. A row naming the rows its reasons compared (against_refs: the walk's skip
   // saying a requirement was not met, and by which row) is fitted next, and then those rows, ahead of the walk's older

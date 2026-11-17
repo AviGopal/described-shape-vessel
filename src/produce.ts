@@ -151,6 +151,8 @@ const make = async (p: Ask): Promise<Response> => {
     const given = all.find((r) => r.id === p.selection_ref)
     const sel = given ?? await records(RECORD_READ, { ids: [p.selection_ref] }).then((a) => (a.ok && Array.isArray(a.body) ? (a.body as Row[])[0] : undefined))
     rootId = typeof sel?.root === "string" ? sel.root : ""
+    // Said, never silent: a row written without its request cannot be scoped to it later (deployment).
+    if (rootId === "") console.error(`[described] the selection names no root or could not be read; this ${p.shape} row is written without one`)
   }
   const UNKNOWN = Symbol("unknown")
   const latestOf = (v: unknown): { value: unknown } | undefined => {

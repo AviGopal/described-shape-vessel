@@ -900,12 +900,16 @@ describe("described-shape vessel", () => {
     const plain = await write({ text: "t" })
     const forged = await write({ text: "t", root: "w-other" })
     ;(INPUTS[INPUTS.length - 1] as any).root = undefined // a selection naming no root: the model's root is still dropped
+    const errAt = vesselErr.length
     const rootless = await write({ text: "t", root: "w-other" })
+    await Bun.sleep(50) // the journal is read from the vessel's stderr as it comes
+    const said = vesselErr.slice(errAt)
     INPUTS.splice(INPUTS.length - 1, 1)
     llmContent = content
     expect(plain?.root).toBe("w1")
     expect(forged?.root).toBe("w1")
     expect(rootless !== undefined && "root" in rootless).toBe(false)
+    expect(said).toContain("the selection names no root or could not be read; this answer row is written without one")
   })
 
   test("[MUST-FAIL] a value the schema says is one of what shown rows hold (x-in) must be one of them; read through an owner-marked read", async () => {

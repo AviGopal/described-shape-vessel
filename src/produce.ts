@@ -463,17 +463,15 @@ const make = async (p: Ask): Promise<Response> => {
   if (outside_.length > 0) {
     return refused(outside_.join("; ").slice(0, 1000))
   }
-  // And a grade of 1 on a request with targets (x-reach: {from, field, r?, cite?} on the schema) must cite a shown row
+  // And a grade of 1 (r) on a request with targets (x-reach: {from, field} on the schema) must cite (evidence_refs) a shown row
   // meeting one, read after the newest change of it (check.ts reachIn): reach is the effect, not the claim or the
   // changing call's own reply. Which calls answer with a shape and which change it are the vessels' declarations
   // (discovery's shapeDescriptions read), read here only when the rule applies.
   const reach = schema.schema as Record<string, unknown> | null
   const rule = targetSourceOf(reach?.["x-reach"])
   if (rule !== undefined) {
-    const o = reach?.["x-reach"] as Record<string, unknown>
-    const [rField, cite] = [typeof o.r === "string" ? o.r : "r", typeof o.cite === "string" ? o.cite : "evidence_refs"]
     const targets = targetsOf(rule, all)
-    if (targets.length > 0 && body[rField] === 1) {
+    if (targets.length > 0 && body.r === 1) {
       const d = await resolve({ type: SHAPE_DESCRIPTIONS })
       if (!d.ok) {
         return fail(d.status, d.text, unservedOf(d.text))
@@ -483,7 +481,7 @@ const make = async (p: Ask): Promise<Response> => {
         const v = (dc as Record<string, unknown> | null)?.[k]
         return typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, T> : {}
       }
-      const missed = reachIn(targets, body[cite], seen, all, map<string>("shape_answers"), map<string[]>("shape_changes"))
+      const missed = reachIn(targets, body.evidence_refs, seen, all, map<string>("shape_answers"), map<string[]>("shape_changes"))
       if (missed !== undefined) {
         return refused(missed)
       }

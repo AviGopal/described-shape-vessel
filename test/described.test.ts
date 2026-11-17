@@ -914,30 +914,44 @@ describe("described-shape vessel", () => {
     expect(targetsOf({ from: "answer", field: "targets" }, [{ ...ok.row, shape: "answer", seq: 1 }])).toEqual(ok.row.targets)
   })
 
-  test("[MUST-FAIL] a target the schema would refuse, on a row from before it, holds no grade of 1: refused by name", async () => {
+  test("[MUST-FAIL] a target the schema would refuse, on a row from before it, holds no grade of 1: refused by name; a 0 is taken", async () => {
     const [inputs, ctx, schema, content] = [SCHEMA.inputs, (SCHEMA as any).context, SCHEMA.schema, llmContent]
-    const rows = [
-      { shape: "change_wanted", id: "cw-old", seq: 2, role: "described", targets: [{ shape: "uiViewState", where: ["region"] }], input_refs: ["w1"] },
-      { shape: "uiViewState", id: "vs-old2", seq: 3, role: "walk", call_id: "r", region: "landing" },
-    ]
-    INPUTS.push(...(rows as any))
     ;(SCHEMA as any).inputs = ["world_changed"]
     ;(SCHEMA as any).context = [{ "x-target": { from: "change_wanted", field: "targets" } }]
     ;(SCHEMA as any).schema = { type: "object", required: ["r"], "x-reach": { from: "change_wanted", field: "targets" },
       properties: { r: { type: "number" }, evidence_refs: { type: "array", items: { type: "string" } } } }
-    llmContent = JSON.stringify({ r: 1, evidence_refs: ["vs-old2"] })
-    const r = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
-      body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "cw-old", "vs-old2"], selection_ref: "s-w", call_id: "c" } } }),
-    })
-    const body = (await r.json()) as any
-    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    const grade = async (target: unknown, r: number) => {
+      const rows = [
+        { shape: "change_wanted", id: "cw-old", seq: 2, role: "described", targets: [target], input_refs: ["w1"] },
+        { shape: "uiViewState", id: "vs-old2", seq: 3, role: "walk", call_id: "r", region: "landing" },
+      ]
+      INPUTS.push(...(rows as any))
+      llmContent = JSON.stringify({ r, evidence_refs: ["vs-old2"] })
+      const res = await fetch(`http://127.0.0.1:${port}/v2/impulses/resolve`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `ApiKey ${NODE_KEY}` },
+        body: JSON.stringify({ impulse: { pointer: { type: "answer", shape: "answer", via_ref: "ch1", input_refs: ["w1", "cw-old", "vs-old2"], selection_ref: "s-w", call_id: "c" } } }),
+      })
+      INPUTS.splice(INPUTS.length - rows.length, rows.length)
+      return { status: res.status, said: String(((await res.json()) as any)?.failure?.body ?? "") }
+    }
+    const cases: Array<[unknown, string]> = [
+      [{ shape: "uiViewState", where: ["region"] }, "target 0's where is not a map of fields to values"],
+      [{ where: { region: "landing" } }, "target 0 names no shape"],
+      [{ shape: "uiViewState", where: "region" }, "target 0's where is not a map of fields to values"],
+      [{ shape: "uiViewState", where: null }, "target 0's where is not a map of fields to values"],
+    ]
+    const ones = []
+    for (const [target] of cases) ones.push(await grade(target, 1))
+    const zero = await grade({ where: null }, 0) // a grade of 0 is held to nothing: taken whatever the targets
     ;(SCHEMA as any).inputs = inputs
     ;(SCHEMA as any).context = ctx
     ;(SCHEMA as any).schema = schema
     llmContent = content
-    expect(r.status).toBe(422)
-    expect(String(body?.failure?.body)).toContain("change_wanted row cw-old: target 0's where is not a map of fields to values")
+    cases.forEach(([, why], i) => {
+      expect(ones[i].status).toBe(422)
+      expect(ones[i].said).toContain(`change_wanted row cw-old: ${why}`)
+    })
+    expect(zero.status).toBe(200)
   })
 
   test("[MUST-FAIL] when the declarations cannot be read, a grade held to reach fails as the read's outage: no refusal, no row", async () => {

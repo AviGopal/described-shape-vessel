@@ -737,6 +737,81 @@ describe("described-shape vessel", () => {
       expect(r.asks).toContain("o-g2")
       expect(r.asks).not.toContain("o-k1")
     })
+
+    // Every site that treats an input row apart treats another root's input-shaped row as context.
+    const go = async (o: { inputs: unknown[]; extra: Array<Record<string, unknown>>; share?: number; reqs?: Array<Record<string, unknown>>; hops?: number; selection?: string; refs?: string[] }) => {
+      const keep = { inputs: SCHEMA.inputs, context: (SCHEMA as any).context, n: INPUTS.length }
+      ;(SCHEMA as any).inputs = o.inputs
+      ;(SCHEMA as any).context = ["hop"]
+      ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer", asks: { "x-inputs": true } }]
+      if (o.share !== undefined) (SCHEMA as any).keep_share = o.share
+      REQUIRES_ROWS = o.reqs ?? []
+      // newer context than the rows under test, more than the budget holds (each hop about 3 KB)
+      const hops = Array.from({ length: o.hops ?? 0 }, (_, i) => ({ shape: "hop", id: `hf${i}`, seq: 1000 + i, output: { text: `fstep-${i}. ` + "x".repeat(3000) } }))
+      const add = [...(rows as any[]), ...o.extra, ...hops]
+      INPUTS.push(...(add as any[]))
+      const before = discovery.seen.length
+      const r = await produce(NODE_KEY, { input_refs: o.refs ?? ["w1", "o-own", ...o.extra.map((x) => String(x.id)), ...hops.map((h) => h.id)], selection_ref: o.selection ?? "sel-w1" })
+      INPUTS.splice(keep.n)
+      ;(SCHEMA as any).inputs = keep.inputs
+      ;(SCHEMA as any).context = keep.context
+      delete (SCHEMA as any).reads
+      delete (SCHEMA as any).keep_share
+      REQUIRES_ROWS = []
+      const calls = discovery.seen.slice(before)
+      const read = calls.find((c) => (c.body as any)?.pointer?.type === "record_lapsed")?.body as any
+      const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+      const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
+      return { status: r.status, body: r.body, asks: read?.pointer?.asks as string[] | undefined, prompt, row }
+    }
+    // another root's grade, citing this request's ask (its producer was shown it), of a given size
+    const far = (id: string, bytes: number, extra: Record<string, unknown> = {}) =>
+      ({ ...outcome(id, 330, "w9", "w9"), input_refs: ["w1"], body: `HEAD_${id} ` + "b".repeat(bytes) + ` TAIL_${id}`, ...extra })
+
+    test("[MUST-FAIL] another root's input-shaped row past the input cap is not refused as too big: it is cut as context", async () => {
+      const r = await go({ inputs: byShape, extra: [far("o-big", 100 * 1024)] })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("HEAD_o-big")
+      expect(r.prompt).not.toContain("TAIL_o-big")
+      expect(r.row.input_refs).toContain("o-big")
+      expect(r.asks).toEqual(["w1", "o-own"])
+    })
+    test("[MUST-FAIL] another root's input-shaped row the context budget left out is not counted as seen", async () => {
+      const r = await go({ inputs: byShape, extra: [far("o-out", 7000)], hops: 80 })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("fstep-79.")
+      expect(r.prompt).not.toContain("HEAD_o-out")
+      expect(r.row.input_refs).not.toContain("o-out")
+      expect(r.row.input_refs).toContain("o-own")
+    })
+    test("[MUST-FAIL] another root's input-shaped row citing this request's input is kept first as a context row is, under a keep entry", async () => {
+      const r = await go({ inputs: ["world_changed", { shape: "outcome", keep: true }], extra: [far("o-kept", 7000)], hops: 80, share: 0.25 })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("HEAD_o-kept")
+      expect(r.row.input_refs).toContain("o-kept")
+      expect(r.asks).toEqual(["w1", "o-own"])
+    })
+    test("[MUST-FAIL] another root's input-shaped row citing this request's input is shown first as a context row is, when a call requires its shape", async () => {
+      const req = { shape: "requires", id: "rq-far", seq: 1, role: "owner", for: "git_land", needs: "outcome" }
+      const r = await go({ inputs: byShape, extra: [far("o-req", 7000)], hops: 80, share: 0.25, reqs: [req] })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("HEAD_o-req")
+      expect(r.row.input_refs).toContain("o-req")
+    })
+    test("[GUARD] with none of these, the same budget leaves the row out", async () => {
+      const r = await go({ inputs: byShape, extra: [far("o-req", 7000)], hops: 80, share: 0.25 })
+      expect(r.prompt).not.toContain("HEAD_o-req")
+    })
+    test("[MUST-FAIL] on a gap, a row naming a row of another shape, or a gap row of another role, with the same gap_id is not the gap's", async () => {
+      const fx = { shape: "failure", id: "fx", seq: 391, role: "detector", writer: "pull-sync", gap_id: "failing-test-x", input_refs: [] }
+      const gx = { ...gap("gx", 392), role: "owner", writer: "owner" }
+      const r = await go({ inputs: ["gap", "outcome"], extra: [fx, gx, outcome("o-fx", 397, "fx", "fx"), outcome("o-gx", 398, "gx", "gx")],
+        selection: "sel-g3", refs: ["g2", "g3", "fx", "gx", "o-g2", "o-fx", "o-gx"] })
+      expect(r.status).toBe(200)
+      expect(r.asks).toContain("o-g2")
+      expect(r.asks).not.toContain("o-fx")
+      expect(r.asks).not.toContain("o-gx")
+    })
   })
 
   // A window: a read the owner scopes to "since that shape was last written" (the USER: a retrospective "on this one horizon").

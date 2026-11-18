@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, inIn, malformedTarget, matches, reachIn, seqsToIds, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf, unseenIn } from "./check"
+import { check, equalsIn, inIn, malformedTarget, matches, reachIn, seqsToIds, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf, unseenIn, type SeqResolved } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
@@ -72,8 +72,13 @@ export const unservedOf = (answer: unknown): string | undefined => {
 }
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
-const refusedBySchema = (body: string, end: Ending = {}, gap?: ContextGap): Response =>
-  Response.json({ failure: { status: 422, body, refused: "schema", ...end, ...(gap !== undefined ? { context_gap: gap } : {}) } }, { status: 422 })
+const refusedBySchema = (body: string, end: Ending = {}, gap?: ContextGap, resolved: SeqResolved = []): Response =>
+  Response.json({ failure: { status: 422, body, refused: "schema", ...end, ...(gap !== undefined ? { context_gap: gap } : {}), ...seqResolvedOf(resolved) } }, { status: 422 })
+// The citations this vessel resolved from a seq to a row's id, said on what it writes and on what it refuses after, so a
+// reader can count the answers that went through it (at most 20, as context_gap). This vessel's own record, never the
+// model's: a seq_resolved in what the model wrote is dropped.
+const seqResolvedOf = (resolved: SeqResolved): { seq_resolved?: SeqResolved } =>
+  resolved.length > 0 ? { seq_resolved: resolved.slice(0, 20) } : {}
 // A citation of a row the producer was shown but may not cite (named inside another row, as a hop's output names the
 // rows it used, or returned by a read whose rows are not this request's) is a gap in what it was shown, not a wrong
 // answer: records charges no one for it. Said only when every value refused is a whole value (a string, or an integer
@@ -512,9 +517,10 @@ const make = async (p: Ask): Promise<Response> => {
     return Response.json({ failure: { status: 422, body: `${why}; text began: ${JSON.stringify(text.slice(0, 200))}`, ...end } }, { status: 422 })
   }
   const ending = endingOf(last.result)
+  const resolved: SeqResolved = []
   const refused = (body: string, gap?: ContextGap): Response => {
     journalRefused(p.shape, gap !== undefined ? "schema, context gap" : "schema", ending, promptBytes)
-    return refusedBySchema(body, ending, gap)
+    return refusedBySchema(body, ending, gap, resolved)
   }
   // A row it may cite, named by the seq the prompt showed for it, is that row: its id is what is checked and stored. Only
   // a seq the prompt rendered: a clipped row shows none. A seq two rows shown share (a read answering from another
@@ -524,7 +530,7 @@ const make = async (p: Ask): Promise<Response> => {
     if (typeof r.seq === "number" && Number.isInteger(r.seq)) idsOfSeq.set(String(r.seq), (idsOfSeq.get(String(r.seq)) ?? new Set()).add(String(r.id)))
   }
   const bySeq = new Map([...idsOfSeq].filter(([, ids]) => ids.size === 1).map(([seq, ids]) => [seq, [...ids][0]]))
-  body = seqsToIds(schema.schema, body, bySeq) as Record<string, unknown>
+  body = seqsToIds(schema.schema, body, bySeq, resolved) as Record<string, unknown>
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
     return refused(checked.errors)
@@ -611,12 +617,13 @@ const make = async (p: Ask): Promise<Response> => {
   // exactly (a row's input_refs hold the whole pool it was shown, other requests' rows among them). The selection's,
   // never the model's: a root in what the model wrote is dropped.
   await rootOf()
-  const { context_omitted: _o, oldest_shown_seq: _s, root: _r, ...said } = body as Record<string, unknown>
+  const { context_omitted: _o, oldest_shown_seq: _s, root: _r, seq_resolved: _q, ...said } = body as Record<string, unknown>
   const row = {
     ...said,
     shape: p.shape,
     input_refs: cited,
     context_omitted: omitted,
+    ...seqResolvedOf(resolved),
     ...(rootId ? { root: rootId } : {}),
     ...(shownSeqs.length > 0 ? { oldest_shown_seq: Math.min(...shownSeqs) } : {}),
     selection_ref: p.selection_ref,

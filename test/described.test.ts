@@ -1965,6 +1965,28 @@ describe("a shown row may be cited by the seq the prompt shows; a row named insi
     delete (SCHEMA as any).reads
     expect([r.status, String(r.failure?.body).includes('"4242" is not a row it was shown')]).toEqual([422, true])
   })
+  test("[MUST-FAIL] an answer that cited a shown row by its seq says so on the row written: where, the seq, the id stored", async () => {
+    const r = await cite({ evidence_refs: ["cg-h1", "4242"] })
+    expect([r.status, r.row?.seq_resolved]).toEqual([200, [{ at: "/evidence_refs/1", seq: "4242", id: "cg-h1" }]])
+  })
+  test("[MUST-FAIL] a refusal after a seq was resolved says so too", async () => {
+    const r = await gapOf(["4242", "zz-nowhere"])
+    expect([r.status, r.failure?.refused, r.failure?.seq_resolved]).toEqual([422, "schema", [{ at: "/0", seq: "4242", id: "cg-h1" }].map((x) => ({ ...x, at: "/evidence_refs/0" }))])
+  })
+  test("an answer citing ids only, or a seq that resolves to nothing, says none (a guard)", async () => {
+    const byId = await cite({ evidence_refs: ["cg-h1"] })
+    const miss = await gapOf(["7777"]) // a clipped row renders no seq
+    expect(["seq_resolved" in (byId.row ?? {}), "seq_resolved" in (miss.failure ?? {})]).toEqual([false, false])
+  })
+  test("[MUST-FAIL] a seq_resolved the model wrote is never kept: only this vessel says what it resolved", async () => {
+    const r = await cite({ evidence_refs: ["cg-h1"], seq_resolved: [{ at: "/x", seq: "1", id: "forged" }] })
+    expect([r.status, "seq_resolved" in (r.row ?? {})]).toEqual([200, false])
+  })
+  test("at most 20 resolutions are said (a guard)", async () => {
+    const hops = Array.from({ length: 22 }, (_, i) => ({ shape: "hop", id: `cg-r${i}`, seq: 40000 + i, output: { text: "r" } }))
+    const r = await cite({ evidence_refs: hops.map((h) => String(h.seq)) }, [...REFS, ...hops.map((h) => h.id)], hops)
+    expect([r.status, r.row?.seq_resolved?.length, r.row?.seq_resolved?.[19]]).toEqual([200, 20, { at: "/evidence_refs/19", seq: "40019", id: "cg-r19" }])
+  })
   test("a row too big to show whole shows no seq: citing its seq is refused, and is no context gap (a guard)", async () => {
     const r = await gapOf(["7777"])
     expect(r.prompt).toContain('"id":"cg-big"')
@@ -2037,5 +2059,21 @@ describe("a shown row may be cited by the seq the prompt shows; a row named insi
   test("the prompt carries no list of ids: what it shows is as before (a guard)", async () => {
     const r = await gapOf(["cg-h1"])
     expect([r.status, Object.keys(JSON.parse(r.prompt))]).toEqual([200, ["description", "schema", "inputs", "reads"]])
+  })
+})
+
+describe("seqsToIds says where each resolution sat, however deep", () => {
+  const BY_SEQ = new Map([["4242", "row-a"], ["7", "row-b"]])
+  test("[MUST-FAIL] a seq two objects deep is recorded at its full place", async () => {
+    const { seqsToIds } = await import("../src/check")
+    const schema = { type: "object", properties: { evidence: { type: "object", properties: { refs: { type: "array", items: { type: "string", "x-shown": true } } } } } }
+    const resolved: Array<{ at: string; seq: string; id: string }> = []
+    const out = seqsToIds(schema, { evidence: { refs: ["x", "4242"] } }, BY_SEQ, resolved)
+    expect([out, resolved]).toEqual([{ evidence: { refs: ["x", "row-a"] } }, [{ at: "/evidence/refs/1", seq: "4242", id: "row-a" }]])
+  })
+  test("an answer that is itself a cited seq is recorded at the root, '/' (a guard)", async () => {
+    const { seqsToIds } = await import("../src/check")
+    const resolved: Array<{ at: string; seq: string; id: string }> = []
+    expect([seqsToIds({ type: "string", "x-shown": true }, "7", BY_SEQ, resolved), resolved]).toEqual(["row-b", [{ at: "/", seq: "7", id: "row-b" }]])
   })
 })

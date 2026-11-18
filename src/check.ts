@@ -48,16 +48,24 @@ export const shownIn = (schema: unknown, body: unknown, ids: Set<string>): strin
   unseenIn(schema, body, ids).map((u) => `${u.at} ${JSON.stringify(u.value)} is not a row it was shown`)
 // Such a value may name a shown row by the seq the prompt showed for it as well as by its id: it is stored as the id
 // (bySeq: each shown row's seq, as its decimal, to its id), so what is written cites rows by id alone.
-export const seqsToIds = (schema: unknown, body: unknown, bySeq: Map<string, string>): unknown => {
+// Each value so resolved is said in `resolved` (where it sat, the seq cited, the id stored), so what was cited by seq can be
+// read back.
+export type SeqResolved = Array<{ at: string; seq: string; id: string }>
+export const seqsToIds = (schema: unknown, body: unknown, bySeq: Map<string, string>, resolved: SeqResolved = [], at = ""): unknown => {
   if (typeof schema !== "object" || schema === null) return body
   const s = schema as { "x-shown"?: boolean; properties?: Record<string, unknown>; items?: unknown }
-  if (s["x-shown"] === true && typeof body === "string") return bySeq.get(body) ?? body
+  if (s["x-shown"] === true && typeof body === "string") {
+    const id = bySeq.get(body)
+    if (id === undefined) return body
+    resolved.push({ at: at || "/", seq: body, id })
+    return id
+  }
   if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
     const out: Record<string, unknown> = { ...(body as Record<string, unknown>) }
-    for (const [k, sub] of Object.entries(s.properties)) if (k in out) out[k] = seqsToIds(sub, out[k], bySeq)
+    for (const [k, sub] of Object.entries(s.properties)) if (k in out) out[k] = seqsToIds(sub, out[k], bySeq, resolved, `${at}/${k}`)
     return out
   }
-  if (s.items && Array.isArray(body)) return body.map((v) => seqsToIds(s.items, v, bySeq))
+  if (s.items && Array.isArray(body)) return body.map((v, i) => seqsToIds(s.items, v, bySeq, resolved, `${at}/${i}`))
   return body
 }
 

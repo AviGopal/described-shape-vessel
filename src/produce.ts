@@ -210,6 +210,23 @@ const make = async (p: Ask): Promise<Response> => {
     const from = on && take.length > 0 ? all.find((x) => x !== r && x.shape === r.shape && x[on] !== undefined && x[on] === r[on]) : undefined
     return [from === undefined ? r : { ...r, ...Object.fromEntries(take.filter((k) => from[k] !== undefined).map((k) => [k, from[k]])) }]
   })
+  // An input entry is a shape or {shape, ...} (latest_by among them), as a context entry is: its shape is the input.
+  const inputs = new Set((schema.inputs as unknown[]).map((e) => typeof e === "object" && e !== null ? String((e as { shape?: unknown }).shape) : String(e)))
+  // A ROW MADE ON ANOTHER ROOT IS CONTEXT, NEVER AN INPUT. A handed row whose root (the request it was made for) is not
+  // the selection's is shown as context: it is not what this answer is about, so it is not shown whole as an input, not
+  // bound by an x-inputs read, and not the request's own for what is kept or required. On a gap, a row naming an earlier
+  // row of the same gap is the same root's (a detector writing the gap again moves its root). A row naming no root, or a
+  // selection naming none, is classed by its shape as before. The root is read only when an input-shaped row names one.
+  // Nor does such a row displace one of the request's own under an input entry's latest_by: it is kept apart there.
+  if (used.some((r) => inputs.has(String(r.shape)) && r.root !== undefined)) await rootOf()
+  const rootRow = all.find((r) => r.id === rootId)
+  const sameGap = (id: string): boolean => {
+    const x = all.find((r) => r.id === id)
+    return rootRow?.gap_id !== undefined && x !== undefined && x.shape === rootRow.shape && x.role === rootRow.role &&
+      JSON.stringify(x.gap_id) === JSON.stringify(rootRow.gap_id)
+  }
+  const elsewhere = (r: Row): boolean => r.root !== undefined && rootId !== undefined && rootId !== "" && r.root !== rootId && !sameGap(String(r.root))
+  const isInput = (r: Row): boolean => inputs.has(String(r.shape)) && !elsewhere(r)
   // A context entry may also say how its rows are shown: whole (unclipped, as an input is, up to the same per-row cap,
   // within the context budget: a file the producer must quote is no use cut), latest_by <field> (only the newest row per
   // value of that field: a file read again after an edit replaces the older read), and covers {shape, on} (rows of that
@@ -222,7 +239,7 @@ const make = async (p: Ask): Promise<Response> => {
   for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
     const by = entryOf(r)?.latest_by
     if (typeof by !== "string") continue
-    const k = `${wanted.findIndex((x) => matches(r, x))}|${JSON.stringify(r[by])}`
+    const k = `${wanted.findIndex((x) => matches(r, x))}|${inputs.has(String(r.shape)) && elsewhere(r) ? "elsewhere|" : ""}${JSON.stringify(r[by])}`
     const older = newest.get(k)
     if (older !== undefined) left.add(older.id)
     newest.set(k, r)
@@ -233,15 +250,13 @@ const make = async (p: Ask): Promise<Response> => {
     for (const r of used) if (r !== w && r.shape === c.shape && r[c.on] === w[c.on]) left.add(r.id)
   }
   used = used.filter((r) => !left.has(r.id))
-  // An input entry is a shape or {shape, ...} (latest_by among them), as a context entry is: its shape is the input.
-  const inputs = new Set((schema.inputs as unknown[]).map((e) => typeof e === "object" && e !== null ? String((e as { shape?: unknown }).shape) : String(e)))
-  const isWhole = (r: Row): boolean => !inputs.has(String(r.shape)) && entryOf(r)?.whole === true
-  const shownAs = (r: Row): Row => inputs.has(String(r.shape)) ? r : clip(r, isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
+  const isWhole = (r: Row): boolean => !isInput(r) && entryOf(r)?.whole === true
+  const shownAs = (r: Row): Row => isInput(r) ? r : clip(r, isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
   // A read pointer value {"x-inputs": true} is bound to the ids of the input rows shown, so a read the owner scopes to
   // the request (record_lapsed's asks) answers about this request alone.
-  const inputIds = used.filter((r) => inputs.has(String(r.shape))).map((r) => r.id)
+  const inputIds = used.filter(isInput).map((r) => r.id)
   // A read pointer value {"x-since": "<shape>"} is bound to the sequence number of the newest row of that shape (0 when
   // there is none), so a read the owner scopes to a window (after_seq) reads what happened since that shape was last
   // written: a retrospective reads since the previous one (the USER: "on this one horizon"). Counted by records'
@@ -287,7 +302,7 @@ const make = async (p: Ask): Promise<Response> => {
   // stdout recorded in a hop) cannot push every prompt that reads it past the model's input ceiling; it still counts as
   // used. A row the schema takes as an INPUT is what the answer is about, and a cut one could be judged as if it were
   // whole (a grader shown part of a diff), so an input past the size is refused, by name, rather than cut.
-  const tooBig = used.filter((r) => inputs.has(String(r.shape)) && JSON.stringify(r).length > INPUT_ROW_MAX)
+  const tooBig = used.filter((r) => isInput(r) && JSON.stringify(r).length > INPUT_ROW_MAX)
   if (tooBig.length > 0) {
     return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(r).length} bytes)`).join(", ")}`)
   }
@@ -304,7 +319,7 @@ const make = async (p: Ask): Promise<Response> => {
   const newestFirst = (rs: Row[]): Row[] => [...rs].sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))
   const share = typeof schema.keep_share === "number" && schema.keep_share > 0 && schema.keep_share <= 1 ? schema.keep_share : 0
   const own = (r: Row): boolean => [r.input_refs].flat().some((id) => inputIds.includes(String(id)))
-  const kept = share > 0 ? used.filter((r) => !inputs.has(String(r.shape)) && entryOf(r)?.keep === true && own(r)) : []
+  const kept = share > 0 ? used.filter((r) => !isInput(r) && entryOf(r)?.keep === true && own(r)) : []
   // WHAT A CALL REQUIRES IS SHOWN EARLY. The owner's requires rows ({for, needs, where, latest_by}) gate a call on rows of
   // a shape (the walk offers fs_edit only once its file was read); a producer that writes such a call must be shown
   // those rows, or the gate and the prompt disagree (52d7196f: an edit written by a producer shown none of the file it
@@ -328,7 +343,7 @@ const make = async (p: Ask): Promise<Response> => {
   for (const q of reqs) {
     const newestOf = new Map<string, Row>()
     for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
-      if (inputs.has(String(r.shape)) || !own(r) || !meets(r, q)) continue
+      if (isInput(r) || !own(r) || !meets(r, q)) continue
       newestOf.set(typeof q.latest_by === "string" ? JSON.stringify(r[q.latest_by]) : r.id, r)
     }
     required.push(...newestOf.values())
@@ -359,19 +374,19 @@ const make = async (p: Ask): Promise<Response> => {
   // read instead (90b4ece3, research). The newest five such rows at most; only a row that is itself fitted pulls its rows
   // in, and only the rows it names; a
   // named row that does not fit is said, by id, not dropped in silence. No shape is named here.
-  const naming = newestFirst(used.filter((r) => !inputs.has(String(r.shape)) && Array.isArray(r.against_refs) && r.against_refs.length > 0)).slice(0, 5)
+  const naming = newestFirst(used.filter((r) => !isInput(r) && Array.isArray(r.against_refs) && r.against_refs.length > 0)).slice(0, 5)
   fill(naming, CONTEXT_BUDGET)
   const named = new Set(naming.filter((r) => fitted.has(r.id)).flatMap((r) => (r.against_refs as unknown[]).map(String)))
-  fill(used.filter((r) => named.has(r.id) && !inputs.has(String(r.shape))), CONTEXT_BUDGET)
+  fill(used.filter((r) => named.has(r.id) && !isInput(r)), CONTEXT_BUDGET)
   const namedNotShown = [...named].filter((id) => used.some((r) => r.id === id) && !fitted.has(id)).slice(0, 20)
-  fill(used.filter((x) => !inputs.has(String(x.shape))), CONTEXT_BUDGET)
-  const seen = used.filter((r) => inputs.has(String(r.shape)) || fitted.has(r.id))
+  fill(used.filter((x) => !isInput(x)), CONTEXT_BUDGET)
+  const seen = used.filter((r) => isInput(r) || fitted.has(r.id))
   const omitted = used.length - seen.length
   // A whole row the budget left out is named, not only counted: it is one the owner asked to be shown whole (a file the
   // producer must quote), and the hop that fetched it may already be left out as covered, so a count alone would hide
   // that a read happened at all. Named by its shape, id and size, and by the value of the field its entry keeps the
   // newest of (latest_by), when it has one; the fields are the owner's, as the entry's are.
-  const notShownWhole = used.filter((r) => !inputs.has(String(r.shape)) && !fitted.has(r.id) && isWhole(r)).slice(0, 20).map((r) => {
+  const notShownWhole = used.filter((r) => !isInput(r) && !fitted.has(r.id) && isWhole(r)).slice(0, 20).map((r) => {
     const by = entryOf(r)?.latest_by
     return { shape: r.shape, id: r.id, bytes: JSON.stringify(r).length, ...(typeof by === "string" && r[by] !== undefined ? { [by]: r[by] } : {}) }
   })

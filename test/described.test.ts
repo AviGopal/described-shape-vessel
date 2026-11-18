@@ -1911,3 +1911,131 @@ describe("an entry by relation under a gap's root: the same gap's earlier detect
     for (const t of ["found under the gap's first row", "found under another gap", "found under a gap naming none"]) expect(prompt).not.toContain(t)
   })
 })
+
+describe("a shown row may be cited by the seq the prompt shows; a row named inside a shown one is a context gap", () => {
+  const CITE = { type: "object", required: ["evidence_refs"], properties: { evidence_refs: { type: "array", items: { type: "string", "x-shown": true } }, note: { type: "string" } } }
+  // rows of this request's pool the producer is not shown (no context entry is of their shape)
+  const POOL = [
+    { shape: "gap", id: "cg-prose", seq: 30001, summary: "a pool row named only in prose" },
+    { shape: "gap", id: "cg-s", seq: 31337, summary: "a pool row named by its seq" },
+    { shape: "gap", id: "cg-u", seq: 30002, summary: "a pool row named only in a row left out" },
+    ...Array.from({ length: 22 }, (_, i) => ({ shape: "gap", id: `cg-p${i}`, seq: 30100 + i, summary: "one of many" })),
+  ]
+  // a shown hop whose output names rows it used, nested, as the walk's hops do
+  const NAMER = { shape: "hop", id: "cg-h1", seq: 4242, output: { input_refs: ["g1"], uses: [{ row: "f1" }], count: 77, from_seq: 31337,
+    used: POOL.filter((r) => /^cg-p[0-9]+$/.test(r.id)).map((r) => r.id), text: "see cg-prose for why" } }
+  // a row too big to show whole: the prompt shows its start as text, and no seq
+  const BIG = { shape: "hop", id: "cg-big", seq: 7777, output: { text: "b".repeat(9 * 1024) } }
+  const REFS = ["w1", "cg-h1", "cg-big", "g1", "f1", ...POOL.map((r) => r.id)]
+  const cite = async (answer: Record<string, unknown>, refs: string[] = REFS, extra: Array<Record<string, unknown>> = []) => {
+    const keep = (SCHEMA as any).schema
+    ;(SCHEMA as any).schema = CITE
+    const rows = [NAMER, BIG, ...POOL, ...extra]
+    INPUTS.push(...(rows as any[]))
+    llmContent = JSON.stringify(answer)
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: refs })
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    ;(SCHEMA as any).schema = keep
+    llmContent = JSON.stringify({ text: "hi" })
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
+    return { status: r.status, failure: r.body?.failure, prompt, row }
+  }
+  const gapOf = (values: string[]) => cite({ evidence_refs: values })
+
+  test("[MUST-FAIL] a shown row cited by the seq the prompt shows is that row: accepted, its id stored; another field holding the number is left as written", async () => {
+    const r = await cite({ evidence_refs: ["4242"], note: "4242" })
+    expect([r.status, r.row?.evidence_refs, r.row?.note]).toEqual([200, ["cg-h1"], "4242"])
+  })
+  test("[MUST-FAIL] a row a read returned that it may cite, named by its seq, is that row: accepted, its id stored", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(LAPSED[0] as any).seq = 5151 // d1: a deadline of this request, so it may be cited
+    const r = await cite({ evidence_refs: ["5151"] })
+    delete (LAPSED[0] as any).seq
+    delete (SCHEMA as any).reads
+    expect([r.status, r.row?.evidence_refs]).toEqual([200, ["d1"]])
+  })
+  test("a seq two shown rows share names neither: refused as written (a guard)", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(LAPSED[0] as any).seq = 4242 // the same number as the shown hop cg-h1's seq
+    const r = await cite({ evidence_refs: ["4242"] })
+    delete (LAPSED[0] as any).seq
+    delete (SCHEMA as any).reads
+    expect([r.status, String(r.failure?.body).includes('"4242" is not a row it was shown')]).toEqual([422, true])
+  })
+  test("a row too big to show whole shows no seq: citing its seq is refused, and is no context gap (a guard)", async () => {
+    const r = await gapOf(["7777"])
+    expect(r.prompt).toContain('"id":"cg-big"')
+    expect([r.status, "context_gap" in r.failure]).toEqual([422, false])
+  })
+  test("[MUST-FAIL] a pool row named inside a shown row (a list, an object in a list) is a context gap, in the envelope the walk reads", async () => {
+    const r = await gapOf(["g1", "f1"])
+    expect(r.failure).toEqual({ status: 422, body: expect.any(String), refused: "schema",
+      context_gap: [{ value: "g1", seen_in: "cg-h1" }, { value: "f1", seen_in: "cg-h1" }] })
+  })
+  test("[MUST-FAIL] a number inside a shown row naming a pool row's seq is a context gap", async () => {
+    const r = await gapOf(["31337"])
+    expect(r.failure.context_gap).toEqual([{ value: "31337", seen_in: "cg-h1" }])
+  })
+  test("[MUST-FAIL] a row a read returned that it may not cite is a context gap: the producer was shown it; still refused, never stored", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    const r = await gapOf(["d9"])
+    delete (SCHEMA as any).reads
+    expect([r.status, r.failure?.refused, r.row]).toEqual([422, "schema", undefined])
+    expect(r.failure.context_gap).toEqual([{ value: "d9", seen_in: "d9" }])
+  })
+  test("a value cited twice is named once (a guard)", async () => {
+    const r = await gapOf(["g1", "g1"])
+    expect(r.failure.context_gap).toEqual([{ value: "g1", seen_in: "cg-h1" }])
+  })
+  test("a value held by a shown row and by a row a read returned is named with the shown row, which the prompt renders first (a guard)", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(LAPSED[1] as any).uses = ["g1"]
+    const r = await gapOf(["g1"])
+    delete (LAPSED[1] as any).uses
+    delete (SCHEMA as any).reads
+    expect(r.failure.context_gap).toEqual([{ value: "g1", seen_in: "cg-h1" }])
+  })
+  test("an object a read returned that is not a row (no id) holds nothing: a pool row named only there is no context gap (a guard)", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(LAPSED as any[]).push({ shape: "due", input_refs: ["w1"], uses: ["cg-u"] })
+    const r = await gapOf(["cg-u"])
+    LAPSED.pop()
+    delete (SCHEMA as any).reads
+    expect([r.status, "context_gap" in r.failure]).toEqual([422, false])
+  })
+  test("a row a shown hop carried whole, as records holds it, is cited as shown and is not a gap value; the rest still are (a guard)", async () => {
+    const r = await cite({ evidence_refs: ["cw1", "g1"] }, [...REFS, "h2"])
+    expect([r.status, r.failure?.body?.includes('"cw1"'), r.failure?.context_gap]).toEqual([422, false, [{ value: "g1", seen_in: "cg-h1" }]])
+  })
+  test("a number inside a shown row naming no row is no context gap: refused and charged as before (a guard)", async () => {
+    const r = await gapOf(["77"])
+    expect([r.status, r.failure.refused, "context_gap" in r.failure]).toEqual([422, "schema", false])
+  })
+  test("a pool row named only inside a string of a shown row is no context gap (a guard)", async () => {
+    const r = await gapOf(["cg-prose"])
+    expect([r.status, "context_gap" in r.failure]).toEqual([422, false])
+  })
+  test("one value seen nowhere beside one seen is no context gap (a guard)", async () => {
+    const r = await gapOf(["g1", "zz-nowhere"])
+    expect([r.status, "context_gap" in r.failure]).toEqual([422, false])
+  })
+  test("at most 20 values are named (a guard)", async () => {
+    const r = await gapOf(NAMER.output.used)
+    expect([r.failure?.context_gap?.length, r.failure?.context_gap?.[0], r.failure?.context_gap?.[19]])
+      .toEqual([20, { value: "cg-p0", seen_in: "cg-h1" }, { value: "cg-p19", seen_in: "cg-h1" }])
+  })
+  test("a pool row named only in a row the budget left out is no context gap (a guard)", async () => {
+    const old = { shape: "hop", id: "cg-old", seq: 1, output: { input_refs: ["cg-u"], text: "o".repeat(3000) } }
+    const hops = Array.from({ length: 70 }, (_, i) => ({ shape: "hop", id: `cg-b${i}`, seq: 100 + i, output: { text: "x".repeat(3000) } }))
+    const r = await cite({ evidence_refs: ["cg-u"] }, [...REFS, "cg-old", ...hops.map((h) => h.id)], [old, ...hops])
+    expect(r.prompt).not.toContain('"cg-old"')
+    expect([r.status, "context_gap" in r.failure]).toEqual([422, false])
+  })
+  test("the prompt carries no list of ids: what it shows is as before (a guard)", async () => {
+    const r = await gapOf(["cg-h1"])
+    expect([r.status, Object.keys(JSON.parse(r.prompt))]).toEqual([200, ["description", "schema", "inputs", "reads"]])
+  })
+})

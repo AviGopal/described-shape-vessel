@@ -30,18 +30,35 @@ export const shapeIn = (schema: unknown, body: unknown, reads: Array<{ type: str
 
 // A schema property may say its value must be the id of a row the producer was shown ("x-shown": true): an answer that
 // cites a row it was never given is refused, by name, rather than written with a reference no reader can resolve.
-export const shownIn = (schema: unknown, body: unknown, ids: Set<string>, at = ""): string[] => {
+// unseenIn names each such value and where it sits; shownIn says it.
+export const unseenIn = (schema: unknown, body: unknown, ids: Set<string>, at = ""): Array<{ at: string; value: string }> => {
   if (typeof schema !== "object" || schema === null) return []
   const s = schema as { "x-shown"?: boolean; properties?: Record<string, unknown>; items?: unknown }
-  const bad: string[] = []
-  if (s["x-shown"] === true && typeof body === "string" && !ids.has(body)) bad.push(`${at || "/"} ${JSON.stringify(body)} is not a row it was shown`)
+  const bad: Array<{ at: string; value: string }> = []
+  if (s["x-shown"] === true && typeof body === "string" && !ids.has(body)) bad.push({ at: at || "/", value: body })
   if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
     for (const [k, sub] of Object.entries(s.properties)) {
-      if (k in body) bad.push(...shownIn(sub, (body as Record<string, unknown>)[k], ids, `${at}/${k}`))
+      if (k in body) bad.push(...unseenIn(sub, (body as Record<string, unknown>)[k], ids, `${at}/${k}`))
     }
   }
-  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...shownIn(s.items, v, ids, `${at}/${i}`)))
+  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...unseenIn(s.items, v, ids, `${at}/${i}`)))
   return bad
+}
+export const shownIn = (schema: unknown, body: unknown, ids: Set<string>): string[] =>
+  unseenIn(schema, body, ids).map((u) => `${u.at} ${JSON.stringify(u.value)} is not a row it was shown`)
+// Such a value may name a shown row by the seq the prompt showed for it as well as by its id: it is stored as the id
+// (bySeq: each shown row's seq, as its decimal, to its id), so what is written cites rows by id alone.
+export const seqsToIds = (schema: unknown, body: unknown, bySeq: Map<string, string>): unknown => {
+  if (typeof schema !== "object" || schema === null) return body
+  const s = schema as { "x-shown"?: boolean; properties?: Record<string, unknown>; items?: unknown }
+  if (s["x-shown"] === true && typeof body === "string") return bySeq.get(body) ?? body
+  if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
+    const out: Record<string, unknown> = { ...(body as Record<string, unknown>) }
+    for (const [k, sub] of Object.entries(s.properties)) if (k in out) out[k] = seqsToIds(sub, out[k], bySeq)
+    return out
+  }
+  if (s.items && Array.isArray(body)) return body.map((v) => seqsToIds(s.items, v, bySeq))
+  return body
 }
 
 // A schema property may say its value must be ONE OF what the rows of a shape hold at a path, among the rows the

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, inIn, malformedTarget, matches, reachIn, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf } from "./check"
+import { check, equalsIn, inIn, malformedTarget, matches, reachIn, seqsToIds, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf, unseenIn } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
@@ -72,8 +72,30 @@ export const unservedOf = (answer: unknown): string | undefined => {
 }
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
-const refusedBySchema = (body: string, end: Ending = {}): Response =>
-  Response.json({ failure: { status: 422, body, refused: "schema", ...end } }, { status: 422 })
+const refusedBySchema = (body: string, end: Ending = {}, gap?: ContextGap): Response =>
+  Response.json({ failure: { status: 422, body, refused: "schema", ...end, ...(gap !== undefined ? { context_gap: gap } : {}) } }, { status: 422 })
+// A citation of a row the producer was shown but may not cite (named inside another row, as a hop's output names the
+// rows it used, or returned by a read whose rows are not this request's) is a gap in what it was shown, not a wrong
+// answer: records charges no one for it. Said only when every value refused is a whole value (a string, or an integer
+// as its decimal) at any depth of a row the prompt rendered, never part of a longer string (a body's prose names
+// anything), and names a real row, of this request's pool or one a read returned, by its id or seq, so a count that
+// happens to equal it is not one. Any value seen nowhere says nothing, and the refusal is charged as before. Each value
+// is named once, with the first rendered row holding it (the shown rows before a read's); at most 20, the walk's own
+// bound on the field it keeps, so the two change together.
+type ContextGap = Array<{ value: string; seen_in: string }>
+const asId = (x: unknown): string | undefined => typeof x === "string" ? x : typeof x === "number" && Number.isInteger(x) ? String(x) : undefined
+const holds = (x: unknown, v: string): boolean =>
+  asId(x) === v || (typeof x === "object" && x !== null && Object.values(x).some((y) => holds(y, v)))
+export const contextGapOf = (values: string[], rendered: Row[], pool: Row[]): ContextGap | undefined => {
+  const real = new Set(pool.flatMap((r) => [String(r.id), ...[asId(r.seq)].filter((s): s is string => s !== undefined)]))
+  const gap: ContextGap = []
+  for (const v of [...new Set(values)]) {
+    const r = real.has(v) ? rendered.find((x) => holds(x, v)) : undefined
+    if (r === undefined) return undefined
+    gap.push({ value: v, seen_in: String(r.id) })
+  }
+  return gap.length > 0 ? gap.slice(0, 20) : undefined
+}
 // How the model's answer ended, as the resolver that answered says it (stop_reason, usage.output_tokens): read as fields
 // of that answer, never from the text. A refused produce carries them, so a reader can tell an answer cut at the model's
 // output limit (stop_reason "max_tokens") from a complete one that is wrong; a parse failure alone could not say which.
@@ -490,10 +512,19 @@ const make = async (p: Ask): Promise<Response> => {
     return Response.json({ failure: { status: 422, body: `${why}; text began: ${JSON.stringify(text.slice(0, 200))}`, ...end } }, { status: 422 })
   }
   const ending = endingOf(last.result)
-  const refused = (body: string): Response => {
-    journalRefused(p.shape, "schema", ending, promptBytes)
-    return refusedBySchema(body, ending)
+  const refused = (body: string, gap?: ContextGap): Response => {
+    journalRefused(p.shape, gap !== undefined ? "schema, context gap" : "schema", ending, promptBytes)
+    return refusedBySchema(body, ending, gap)
   }
+  // A row it may cite, named by the seq the prompt showed for it, is that row: its id is what is checked and stored. Only
+  // a seq the prompt rendered: a clipped row shows none. A seq two rows shown share (a read answering from another
+  // store's numbering) names neither, and stays as written.
+  const idsOfSeq = new Map<string, Set<string>>()
+  for (const r of [...shown, ...read]) {
+    if (typeof r.seq === "number" && Number.isInteger(r.seq)) idsOfSeq.set(String(r.seq), (idsOfSeq.get(String(r.seq)) ?? new Set()).add(String(r.id)))
+  }
+  const bySeq = new Map([...idsOfSeq].filter(([, ids]) => ids.size === 1).map(([seq, ids]) => [seq, [...ids][0]]))
+  body = seqsToIds(schema.schema, body, bySeq) as Record<string, unknown>
   const checked = check(schema.schema as object, body)
   if (!checked.ok) {
     return refused(checked.errors)
@@ -525,7 +556,11 @@ const make = async (p: Ask): Promise<Response> => {
     }
   }
   if (unseen.length > 0) {
-    return refused(unseen.join("; ").slice(0, 1000))
+    // searched in the rows as the prompt rendered them: a row the budget left out was not shown, and a clipped one shows
+    // only its start, as text
+    const returned = looked.flatMap((a) => Array.isArray(a) ? a.filter((x): x is Row => typeof x?.id === "string") : [])
+    const rendered = [...shown, ...returned]
+    return refused(unseen.join("; ").slice(0, 1000), contextGapOf(unseenIn(schema.schema, body, shownIds).map((u) => u.value), rendered, [...all, ...returned]))
   }
   // And a value it says must be what a shown row holds must be exactly that.
   const unequal = equalsIn(schema.schema, body, seen)

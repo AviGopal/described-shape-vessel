@@ -98,12 +98,15 @@ export const equalsIn = (schema: unknown, body: unknown, rows: Array<Record<stri
 
 // Whether a row is one an inputs or context entry names: a shape, or {shape, where} with each where field equal to the
 // row's (a list: any of its values).
-export const matches = (r: Record<string, unknown>, e: unknown): boolean => {
+// An entry names a shape, or a relation in its place: {answers_a_call: true} admits the answer of a tool call this
+// request's root made, success or failure alike, whatever its shape (answersOf, produce.ts). Either way its where fields
+// must hold too. Without answersOf a relational entry admits nothing.
+export const matches = (r: Record<string, unknown>, e: unknown, answersOf?: (r: Record<string, unknown>) => boolean): boolean => {
   if (typeof e === "string") return String(r.shape) === e
   if (typeof e !== "object" || e === null) return false
-  const { shape, where } = e as { shape?: unknown; where?: Record<string, unknown> }
-  return String(r.shape) === String(shape) &&
-    Object.entries(where ?? {}).every(([k, v]) => Array.isArray(v) ? v.includes(r[k]) : r[k] === v)
+  const { shape, where, answers_a_call } = e as { shape?: unknown; where?: Record<string, unknown>; answers_a_call?: unknown }
+  const admitted = answers_a_call === true ? answersOf?.(r) === true : String(r.shape) === String(shape)
+  return admitted && Object.entries(where ?? {}).every(([k, v]) => Array.isArray(v) ? v.includes(r[k]) : r[k] === v)
 }
 
 export const check = (schema: object, body: unknown): { ok: boolean; errors: string } => {

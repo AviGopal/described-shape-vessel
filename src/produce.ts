@@ -5,6 +5,19 @@ import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
 
+// The walk's call protocol, as its rows say it: a started hop names its call (call_id), the selection it was made for
+// (selection_ref) and its kind; a tool's call is "call", a template's calls "run".
+const HOP = "hop"
+const STARTED = "started"
+const TOOL_KINDS = new Set(["call", "run"])
+const callAnswers = (all: Row[], ownSelection: (sel: Row) => boolean): ((r: Record<string, unknown>) => boolean) => {
+  const byId = new Map(all.map((r) => [String(r.id), r]))
+  const ofOwn = (h: Row): boolean => { const sel = byId.get(String(h.selection_ref)); return sel !== undefined && ownSelection(sel) }
+  const calls = new Set(all.filter((h) => h.shape === HOP && h.phase === STARTED && TOOL_KINDS.has(String(h.kind)) && typeof h.call_id === "string"
+    && ofOwn(h)).map((h) => String(h.call_id)))
+  return (r) => r.shape !== HOP && typeof r.call_id === "string" && calls.has(r.call_id)
+}
+
 type Row = { id: string; [k: string]: unknown }
 type ChannelCall = {
   pointer: Record<string, unknown>
@@ -202,8 +215,39 @@ const make = async (p: Ask): Promise<Response> => {
     return src === undefined ? [e] : [...new Set(targetsOf(src, all).map((t) => t.shape))]
   }
   const wanted = [schema.inputs, schema.context ?? []].flat().flatMap(expand).map(resolve_)
+  // Whose root a row is (the row's own root field; rootId once rootOf has read it): defined here, before any row is
+  // matched, because a relational entry asks it of a call's selection while rows are matched. Explained below, where the
+  // input entries use it.
+  let rootRowAt: string | undefined
+  let rootRowFound: Row | undefined
+  const rootRowOf = (): Row | undefined => {
+    if (rootRowAt !== rootId) { rootRowAt = rootId; rootRowFound = all.find((r) => r.id === rootId) }
+    return rootRowFound
+  }
+  // a gap is one gap only by a real id: an absent, null or empty gap_id names no gap
+  const isGapId = (v: unknown): boolean => v !== undefined && v !== null && v !== ""
+  const sameGap = (id: string): boolean => {
+    const rootRow = rootRowOf()
+    const x = all.find((r) => r.id === id)
+    return rootRow !== undefined && isGapId(rootRow.gap_id) && x !== undefined && x.shape === rootRow.shape && x.role === rootRow.role &&
+      JSON.stringify(x.gap_id) === JSON.stringify(rootRow.gap_id)
+  }
+  const elsewhere = (r: Row): boolean => r.root !== undefined && rootId !== undefined && rootId !== "" && r.root !== rootId && !sameGap(String(r.root))
+  // An {answers_a_call: true} entry admits the answer of a tool call this request's root made (check.ts matches): a row,
+  // of any shape but the walk's hop, whose call_id is that of a started hop of a tool call ("call", or "run" for a
+  // template's calls) made for a selection whose root is this request's root. The selection is read through the hop's
+  // selection_ref, never inferred from the pool: a selection's rows join every pool whose rows it cites, so presence in
+  // the pool says nothing about whose call it was. A selection with no root, or a request whose root is unknown, admits
+  // nothing. A produce's or a wait's answer is never a call's answer here.
+  const relational = wanted.some((x) => typeof x === "object" && x !== null && (x as { answers_a_call?: unknown }).answers_a_call === true)
+  if (relational) await rootOf()
+  // A call is this root's when its selection names a root, the request's root is known, and the selection is not
+  // elsewhere (the reading the input entries use, a gap's earlier detector row included): fail closed, where elsewhere is
+  // open, since a selection naming no root, or a root not read, admits nothing.
+  const ownSelection = (sel: Row): boolean => typeof sel.root === "string" && sel.root !== "" && rootId !== undefined && rootId !== "" && !elsewhere(sel)
+  const answersOf = relational ? callAnswers(all, ownSelection) : undefined
   let used = all.flatMap((r) => {
-    const e = wanted.find((x) => matches(r, x)) as { join?: { on?: unknown; take?: unknown } } | undefined
+    const e = wanted.find((x) => matches(r, x, answersOf)) as { join?: { on?: unknown; take?: unknown } } | undefined
     if (e === undefined) return []
     const on = String(e.join?.on ?? "")
     const take = [e.join?.take ?? []].flat().map(String).filter((k) => r[k] === undefined)
@@ -219,15 +263,6 @@ const make = async (p: Ask): Promise<Response> => {
   // selection naming none, is classed by its shape as before. The root is read only when an input-shaped row names one.
   // Nor does such a row displace one of the request's own under an input entry's latest_by: it is kept apart there.
   if (used.some((r) => inputs.has(String(r.shape)) && r.root !== undefined)) await rootOf()
-  const rootRow = all.find((r) => r.id === rootId)
-  // a gap is one gap only by a real id: an absent, null or empty gap_id names no gap
-  const isGapId = (v: unknown): boolean => v !== undefined && v !== null && v !== ""
-  const sameGap = (id: string): boolean => {
-    const x = all.find((r) => r.id === id)
-    return rootRow !== undefined && isGapId(rootRow.gap_id) && x !== undefined && x.shape === rootRow.shape && x.role === rootRow.role &&
-      JSON.stringify(x.gap_id) === JSON.stringify(rootRow.gap_id)
-  }
-  const elsewhere = (r: Row): boolean => r.root !== undefined && rootId !== undefined && rootId !== "" && r.root !== rootId && !sameGap(String(r.root))
   const isInput = (r: Row): boolean => inputs.has(String(r.shape)) && !elsewhere(r)
   // A context entry may also say how its rows are shown: whole (unclipped, as an input is, up to the same per-row cap,
   // within the context budget: a file the producer must quote is no use cut), latest_by <field> (only the newest row per
@@ -235,13 +270,13 @@ const make = async (p: Ask): Promise<Response> => {
   // shape with the same value at on are left out once a whole row is shown: the tool call that fetched the row would
   // otherwise spend the budget on the same text again). The shapes and fields are the owner's; this names none.
   type Entry = { whole?: unknown; latest_by?: unknown; covers?: { shape?: unknown; on?: unknown }; keep?: unknown }
-  const entryOf = (r: Row): Entry | undefined => wanted.find((x) => matches(r, x)) as Entry | undefined
+  const entryOf = (r: Row): Entry | undefined => wanted.find((x) => matches(r, x, answersOf)) as Entry | undefined
   const left = new Set<string>()
   const newest = new Map<string, Row>()
   for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
     const by = entryOf(r)?.latest_by
     if (typeof by !== "string") continue
-    const k = `${wanted.findIndex((x) => matches(r, x))}|${inputs.has(String(r.shape)) && elsewhere(r) ? "elsewhere|" : ""}${JSON.stringify(r[by])}`
+    const k = `${wanted.findIndex((x) => matches(r, x, answersOf))}|${inputs.has(String(r.shape)) && elsewhere(r) ? "elsewhere|" : ""}${JSON.stringify(r[by])}`
     const older = newest.get(k)
     if (older !== undefined) left.add(older.id)
     newest.set(k, r)
@@ -367,7 +402,7 @@ const make = async (p: Ask): Promise<Response> => {
   // (the request's clone, where every call works), as one newest-first pass across entries did (qa). The required rows
   // then get a share of their own on top, so a call's large file reads never push out the request's clone or its commit
   // (qa: one shared share starved the kept rows)
-  const listed = (r: Row): number => wanted.findIndex((x) => matches(r, x))
+  const listed = (r: Row): number => wanted.findIndex((x) => matches(r, x, answersOf))
   fill(kept, CONTEXT_BUDGET * share, (rs) => newestFirst(rs).sort((a, b) => listed(a) - listed(b)))
   fill(required, spent + CONTEXT_BUDGET * share)
   // WHAT A SHOWN REFUSAL NAMES COMES WITH IT. A row naming the rows its reasons compared (against_refs: the walk's skip

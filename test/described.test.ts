@@ -1598,3 +1598,145 @@ describe("described-shape vessel", () => {
     expect(row.input_refs).not.toContain("h-read")
   })
 })
+
+describe("an entry by relation: the answer of a tool call this request's root made", () => {
+  // the request's own selection names root w1; B is this root, A another, N a selection with no root
+  const rows = [
+    { shape: "selection", id: "sel-1", root: "w1" },
+    { shape: "selection", id: "sB", root: "w1" },
+    { shape: "selection", id: "sA", root: "wA", input_refs: ["w1"] }, // A's selection cites this root's ask
+    { shape: "selection", id: "sN" },
+    { shape: "hop", id: "hB", role: "walk", phase: "started", kind: "call", call_id: "kB", selection_ref: "sB", pointer_type: "bounded_shell" },
+    { shape: "hop", id: "hB2", role: "walk", phase: "started", kind: "call", call_id: "kB2", selection_ref: "sB", pointer_type: "fs_edit" },
+    { shape: "hop", id: "hR", role: "walk", phase: "started", kind: "run", call_id: "kR", selection_ref: "sB", pointer_type: "code_search" },
+    { shape: "hop", id: "hA", role: "walk", phase: "started", kind: "call", call_id: "kA", selection_ref: "sA", pointer_type: "bounded_shell" },
+    { shape: "hop", id: "hN", role: "walk", phase: "started", kind: "call", call_id: "kN", selection_ref: "sN", pointer_type: "bounded_shell" },
+    { shape: "hop", id: "hP", role: "walk", phase: "started", kind: "produce", call_id: "kP", selection_ref: "sB", pointer_type: "request" },
+    { shape: "hop", id: "hBe", role: "walk", phase: "ended", kind: "call", call_id: "kB", selection_ref: "sB", output: { text: "the ended hop of kB" } },
+    { shape: "boundedShellResult", id: "aB", role: "walk", call_id: "kB", selection_ref: "sB", stdout: "grep found it in B" },
+    { shape: "failure", id: "fB", role: "walk", call_id: "kB2", selection_ref: "sB", status: 200, body: "old_string not found in B" },
+    { shape: "codeSearchResult", id: "aR", role: "walk", call_id: "kR", selection_ref: "sB", matches: "a template run's answer in B" },
+    { shape: "boundedShellResult", id: "aA", role: "walk", call_id: "kA", selection_ref: "sA", stdout: "an answer of root A" },
+    { shape: "boundedShellResult", id: "aN", role: "walk", call_id: "kN", selection_ref: "sN", stdout: "an answer of no root" },
+    { shape: "request", id: "dP", role: "described", call_id: "kP", selection_ref: "sB", text: "a draft the producer wrote" },
+  ]
+  const ids = ["w1", ...rows.filter((r) => r.id !== "sel-1").map((r) => r.id)]
+  const promptFor = async (context: unknown[]) => {
+    INPUTS.push(...(rows as any[]))
+    const keep = SCHEMA.context
+    ;(SCHEMA as any).context = context
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, { input_refs: ids })
+    ;(SCHEMA as any).context = keep
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    return { status: r.status, prompt }
+  }
+
+  test("[MUST-FAIL] this root's tool-call answers are admitted, success, failure and a template run's alike (d)", async () => {
+    const { status, prompt } = await promptFor([{ answers_a_call: true, latest_by: "call_id" }])
+    expect(status).toBe(200)
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).toContain("old_string not found in B")
+    expect(prompt).toContain("a template run's answer in B")
+  })
+  test("[MUST-FAIL] a hop is never a call's answer, though it carries the call's call_id (d)", async () => {
+    // no latest_by here: with it, the ended hop and the answer of kB share a key and one drops the other either way
+    const { prompt } = await promptFor([{ answers_a_call: true }])
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).not.toContain("the ended hop of kB")
+  })
+  // (a)-(c) are guards: before a relational entry existed one admitted nothing, so they hold there too; what they
+  // pin is that the relation admits no more than this root's tool-call answers.
+  test("another root's call is not admitted, though its selection cites this root's ask (a, a guard)", async () => {
+    const { prompt } = await promptFor([{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).not.toContain("an answer of root A")
+  })
+  test("a call whose selection names no root admits nothing (b, fails closed; a guard)", async () => {
+    const { prompt } = await promptFor([{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).not.toContain("an answer of no root")
+  })
+  test("a producer's row carrying its produce's call_id is not a call's answer (c, a guard)", async () => {
+    const { prompt } = await promptFor([{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).not.toContain("a draft the producer wrote")
+  })
+  test("[MUST-FAIL] an answer a named entry also matches follows the named entry's rules, listed first; the others keep the relation's (e)", async () => {
+    // two reads of one path by two calls: the named entry keeps the newest per path; by relation both would show
+    const reads = [
+      { shape: "hop", id: "hF1", role: "walk", phase: "started", kind: "call", call_id: "kF1", selection_ref: "sB", pointer_type: "fs_read" },
+      { shape: "hop", id: "hF2", role: "walk", phase: "started", kind: "call", call_id: "kF2", selection_ref: "sB", pointer_type: "fs_read" },
+      { shape: "fileContent", id: "c1", seq: 1, role: "walk", call_id: "kF1", selection_ref: "sB", path: "src/a.ts", content: "the older read v1" },
+      { shape: "fileContent", id: "c2", seq: 2, role: "walk", call_id: "kF2", selection_ref: "sB", path: "src/a.ts", content: "the newer read v2" },
+    ]
+    rows.push(...(reads as any[])); ids.push(...reads.map((r) => r.id))
+    const { prompt } = await promptFor([{ shape: "fileContent", latest_by: "path" }, { answers_a_call: true, latest_by: "call_id" }])
+    rows.splice(rows.length - reads.length, reads.length); ids.splice(ids.length - reads.length, reads.length)
+    expect(prompt).toContain("the newer read v2")
+    expect(prompt).not.toContain("the older read v1")
+    // the named entry admits only its own shape: the other answers are still shown, one per call
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).toContain("old_string not found in B")
+  })
+  test("without a relational entry nothing of these is admitted, as before (a guard)", async () => {
+    const { prompt } = await promptFor(["world_changed"])
+    for (const t of ["grep found it in B", "old_string not found in B", "an answer of root A", "a draft the producer wrote"]) expect(prompt).not.toContain(t)
+  })
+  test("[MUST-FAIL] only answers_a_call: true is the relation; another value is no entry of it, even beside a true one", async () => {
+    // the "yes" entry would admit the shell result; the true entry admits only failures
+    const { prompt } = await promptFor([{ answers_a_call: "yes", where: { shape: "boundedShellResult" } }, { answers_a_call: true, where: { shape: "failure" } }])
+    expect(prompt).toContain("old_string not found in B")
+    expect(prompt).not.toContain("grep found it in B")
+  })
+  test("[MUST-FAIL] a relational entry's where must hold too", async () => {
+    const { prompt } = await promptFor([{ answers_a_call: true, where: { shape: "boundedShellResult" } }])
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).not.toContain("old_string not found in B")
+  })
+})
+
+describe("an entry by relation under a gap's root: the same gap's earlier detector row, another gap, no root", () => {
+  // the request is for gap G, whose detector row is now gN (rewritten from gO); its calls were made under both
+  const rows = [
+    { shape: "gap", id: "gO", role: "detector", gap_id: "G", summary: "the gap as first written" },
+    { shape: "gap", id: "gN", role: "detector", gap_id: "G", summary: "the gap as rewritten" },
+    { shape: "gap", id: "gH", role: "detector", gap_id: "H", summary: "another gap" },
+    { shape: "gap", id: "gZ", role: "detector", gap_id: null, summary: "a gap row naming no gap" },
+    { shape: "selection", id: "sel-g", root: "gN" },
+    { shape: "selection", id: "sO", root: "gO" },
+    { shape: "selection", id: "sH", root: "gH" },
+    { shape: "selection", id: "sZ", root: "gZ" },
+    { shape: "hop", id: "hO", role: "walk", phase: "started", kind: "call", call_id: "kO", selection_ref: "sO", pointer_type: "bounded_shell" },
+    { shape: "hop", id: "hH", role: "walk", phase: "started", kind: "call", call_id: "kH", selection_ref: "sH", pointer_type: "bounded_shell" },
+    { shape: "hop", id: "hZ", role: "walk", phase: "started", kind: "call", call_id: "kZ", selection_ref: "sZ", pointer_type: "bounded_shell" },
+    { shape: "boundedShellResult", id: "aO", role: "walk", call_id: "kO", selection_ref: "sO", stdout: "found under the gap's first row" },
+    { shape: "boundedShellResult", id: "aH", role: "walk", call_id: "kH", selection_ref: "sH", stdout: "found under another gap" },
+    { shape: "boundedShellResult", id: "aZ", role: "walk", call_id: "kZ", selection_ref: "sZ", stdout: "found under a gap naming none" },
+  ]
+  const run = async (selection_ref: string) => {
+    INPUTS.push(...(rows as any[]))
+    const keep = SCHEMA.context
+    ;(SCHEMA as any).context = [{ answers_a_call: true, latest_by: "call_id" }]
+    const before = discovery.seen.length
+    const ids = ["w1", ...rows.filter((r) => !r.id.startsWith("sel-")).map((r) => r.id)]
+    const r = await produce(NODE_KEY, { input_refs: ids, selection_ref })
+    ;(SCHEMA as any).context = keep
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    const prompt = String((discovery.seen.slice(before).find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    return { status: r.status, prompt }
+  }
+  test("[MUST-FAIL] a call made under the same gap's earlier detector row is this root's: admitted", async () => {
+    const { status, prompt } = await run("sel-g")
+    expect(status).toBe(200)
+    expect(prompt).toContain("found under the gap's first row")
+  })
+  test("another gap's call, and one under a gap row naming no gap, are not admitted (guards)", async () => {
+    const { prompt } = await run("sel-g")
+    expect(prompt).not.toContain("found under another gap")
+    expect(prompt).not.toContain("found under a gap naming none")
+  })
+  test("a request whose root cannot be read admits no call's answer (fails closed; a guard)", async () => {
+    const { prompt } = await run("sel-unreadable")
+    for (const t of ["found under the gap's first row", "found under another gap", "found under a gap naming none"]) expect(prompt).not.toContain(t)
+  })
+})

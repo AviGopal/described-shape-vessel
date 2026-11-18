@@ -159,11 +159,13 @@ const make = async (p: Ask): Promise<Response> => {
   // root's shape with the same `continues` field. The root is read from the selection only when some value needs it.
   const hasLatest = (x: unknown): boolean => JSON.stringify(x ?? null).includes('"x-latest"')
   let rootId: string | undefined
+  let selectionSeq: number | undefined
   const rootOf = async (): Promise<void> => {
     if (rootId !== undefined) return
     const given = all.find((r) => r.id === p.selection_ref)
     const sel = given ?? await records(RECORD_READ, { ids: [p.selection_ref] }).then((a) => (a.ok && Array.isArray(a.body) ? (a.body as Row[])[0] : undefined))
     rootId = typeof sel?.root === "string" ? sel.root : ""
+    selectionSeq = typeof sel?.seq === "number" ? sel.seq : undefined
     // Said, never silent: a row written without its request cannot be scoped to it later (deployment).
     if (rootId === "") console.error(`[described] the selection names no root or could not be read; this ${p.shape} row is written without one`)
   }
@@ -350,13 +352,32 @@ const make = async (p: Ask): Promise<Response> => {
   // A row that does not fit is skipped and the fill goes on: stopping at it hid every older row behind one big one.
   // Some rows matter however old they are (a request's own clone: its cwd is where every call works). The owner marks
   // such an entry keep: true, and its rows are fitted first, newest first, within a share of the budget the schema row
-  // gives (keep_share, 0 to 1; with none, nothing is fitted first). Only a row that cites one of this produce's inputs is
-  // kept so: the request's own, never a row another request's lineage reached.
+  // gives (keep_share, 0 to 1; with none, nothing is fitted first). Only a row of this request's root is kept so, by the
+  // reading the call answers use (ownSelection): the row names the root, or its selection is this root's (a tool's
+  // answer carries the selection its call was made for). A row's citations do not decide it: a verdict or a call's
+  // answer cites what it judged or read, not the request's inputs, and was left to the fill however much it mattered.
+  // An answer to a call is kept only while it is newer than this root's newest row of the shape being produced: an
+  // answer older than that row was there to be drafted on, and goes to the fill; one that came back after it, whenever
+  // its call started, was never seen. The call decides which root an answer is of (its selection), never whether it was
+  // drafted on.
   const order = new Map(used.map((r, i) => [r.id, typeof r.seq === "number" ? r.seq : i]))
   const newestFirst = (rs: Row[]): Row[] => [...rs].sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))
   const share = typeof schema.keep_share === "number" && schema.keep_share > 0 && schema.keep_share <= 1 ? schema.keep_share : 0
-  const own = (r: Row): boolean => [r.input_refs].flat().some((id) => inputIds.includes(String(id)))
-  const kept = share > 0 ? used.filter((r) => !isInput(r) && entryOf(r)?.keep === true && own(r)) : []
+  if (share > 0) await rootOf()
+  const byIdAll = new Map(all.map((r) => [String(r.id), r]))
+  const selectionOf = (r: Row): Row | undefined => byIdAll.get(String(r.selection_ref))
+  const ofRoot = (r: Row): boolean => {
+    const s = selectionOf(r)
+    return (rootId !== "" && r.root === rootId) || (s !== undefined && ownSelection(s))
+  }
+  // this root's rows of the shape being produced, made before this selection: by the root they name, else their selection's
+  const lastMade = Math.max(-1, ...all.filter((r) => r.shape === p.shape && Number(r.seq) < (selectionSeq ?? Infinity) &&
+    (r.root ?? selectionOf(r)?.root) === rootId).map((r) => Number(r.seq)))
+  const unconsumed = (r: Row): boolean => (entryOf(r) as { answers_a_call?: unknown } | undefined)?.answers_a_call !== true ||
+    Number(r.seq) > lastMade
+  const kept = share > 0 ? used.filter((r) => !isInput(r) && entryOf(r)?.keep === true && ofRoot(r) && unconsumed(r)) : []
+  // a row that cites one of this produce's inputs: what the requires rows are fitted from (below)
+  const citesInput = (r: Row): boolean => [r.input_refs].flat().some((id) => inputIds.includes(String(id)))
   // WHAT A CALL REQUIRES IS SHOWN EARLY. The owner's requires rows ({for, needs, where, latest_by}) gate a call on rows of
   // a shape (the walk offers fs_edit only once its file was read); a producer that writes such a call must be shown
   // those rows, or the gate and the prompt disagree (52d7196f: an edit written by a producer shown none of the file it
@@ -380,7 +401,7 @@ const make = async (p: Ask): Promise<Response> => {
   for (const q of reqs) {
     const newestOf = new Map<string, Row>()
     for (const r of [...used].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0))) {
-      if (isInput(r) || !own(r) || !meets(r, q)) continue
+      if (isInput(r) || !citesInput(r) || !meets(r, q)) continue
       newestOf.set(typeof q.latest_by === "string" ? JSON.stringify(r[q.latest_by]) : r.id, r)
     }
     required.push(...newestOf.values())

@@ -232,14 +232,17 @@ describe("described-shape vessel", () => {
   })
 
   // The request's own clone, kept in view however much newer context there is (the owner's keep, within keep_share).
+  // The walk's selection this produce answers (the default selection_ref), naming the request's root as live ones do.
+  const OWN_SELECTION = { shape: "selection", id: "sel-1", seq: 5000, role: "walk", writer: "walk-test", root: "w1", pool_refs: ["w1"] }
   const keepRun = async (opts: { keep?: boolean; share?: number; extra?: Array<Record<string, unknown>> }) => {
     const ctx = (SCHEMA as any).context
     ;(SCHEMA as any).context = ["hop", "failure", { shape: "gitWorktree", latest_by: "repo", ...(opts.keep ? { keep: true } : {}) }]
     if (opts.share !== undefined) (SCHEMA as any).keep_share = opts.share
-    // bigger than any slack the newest-first fill can leave (each hop is about 3 KB), so only keep can bring it in
-    const clone = { shape: "gitWorktree", id: "gw-own", seq: 50, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], note: "c".repeat(3500) }
+    // bigger than any slack the newest-first fill can leave (each hop is about 3 KB), so only keep can bring it in; a
+    // clone is a tool's answer, made for this request's selection, as live clones are
+    const clone = { shape: "gitWorktree", id: "gw-own", seq: 50, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], selection_ref: "sel-1", call_id: "c-gw", note: "c".repeat(3500) }
     const hops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hk${i}`, seq: 100 + i, output: { text: `kstep-${i}. ` + "x".repeat(3000) } }))
-    const rows = [clone, ...hops, ...(opts.extra ?? [])]
+    const rows = [OWN_SELECTION, clone, ...hops, ...(opts.extra ?? [])]
     INPUTS.push(...(rows as any))
     const before = discovery.seen.length
     const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
@@ -260,9 +263,9 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ["hop", "failure", opts.entry ?? { shape: "fileContent", whole: true, latest_by: "path" }, ...(opts.more ?? [])]
     ;(SCHEMA as any).keep_share = opts.share ?? 0.25
     REQUIRES_ROWS = opts.given ? [] : (opts.reqs ?? [])
-    const file = { shape: "fileContent", id: "fc-edit", seq: 50, path: "/trees/c2/src/EDITED.ts", input_refs: ["w1"], content: "EDITED_FILE_BODY " + "e".repeat(20000) }
+    const file = { shape: "fileContent", id: "fc-edit", seq: 50, path: "/trees/c2/src/EDITED.ts", input_refs: ["w1"], selection_ref: "sel-1", call_id: "c-fc", content: "EDITED_FILE_BODY " + "e".repeat(20000) }
     const hops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hr${i}`, seq: 100 + i, output: { text: `rstep-${i}. ` + "x".repeat(3000) } }))
-    const rows = [file, ...hops, ...(opts.given ? (opts.reqs ?? []) : []), ...(opts.extra ?? [])]
+    const rows = [OWN_SELECTION, file, ...hops, ...(opts.given ? (opts.reqs ?? []) : []), ...(opts.extra ?? [])]
     INPUTS.push(...(rows as any))
     const before = discovery.seen.length
     const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })
@@ -329,14 +332,14 @@ describe("described-shape vessel", () => {
     // two more reads of other files, so the required rows alone (~66 KB) are more than the keep share (48 KB)
     const reads = ["A", "B"].map((x, i) => ({ shape: "fileContent", id: `fc-${x}`, seq: 55 + i, path: `/trees/c2/src/${x}.ts`, input_refs: ["w1"], content: `READ_${x} ` + "r".repeat(22000) }))
     // bigger than what two reads leave of one 48 KB share, so it fits only with a share of its own
-    const clone = { shape: "gitWorktree", id: "gw-own", seq: 45, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], note: "c".repeat(6000) }
+    const clone = { shape: "gitWorktree", id: "gw-own", seq: 45, repo: "hsv", cwd: "/trees/OWN_CLONE", input_refs: ["w1"], selection_ref: "sel-1", call_id: "c-gw", note: "c".repeat(6000) }
     const r = await reqRun({ reqs: [REQ], extra: [...reads, clone], more: [{ shape: "gitWorktree", latest_by: "repo", keep: true }] })
     expect([r.prompt.includes("/trees/OWN_CLONE"), (r.row.input_refs as string[]).includes("gw-own"), r.prompt.includes("READ_B")]).toEqual([true, true, true])
   })
 
   test("[MUST-FAIL] kept rows that fill their share never push out a required read: the edited file is still shown beside them", async () => {
     // five clones of different repositories, ~46 KB of kept rows: nearly the whole 48 KB keep share
-    const clones = [1, 2, 3, 4, 5].map((i) => ({ shape: "gitWorktree", id: `gw-${i}`, seq: 40 + i, repo: `repo-${i}`, cwd: `/trees/CLONE_${i}`, input_refs: ["w1"], note: "c".repeat(9000) }))
+    const clones = [1, 2, 3, 4, 5].map((i) => ({ shape: "gitWorktree", id: `gw-${i}`, seq: 40 + i, repo: `repo-${i}`, cwd: `/trees/CLONE_${i}`, input_refs: ["w1"], selection_ref: "sel-1", call_id: `c-gw${i}`, note: "c".repeat(9000) }))
     const r = await reqRun({ reqs: [REQ], extra: clones, more: [{ shape: "gitWorktree", latest_by: "repo", keep: true }] })
     expect([r.prompt.includes("EDITED_FILE_BODY"), (r.row.input_refs as string[]).includes("fc-edit"), clones.every((c) => (r.row.input_refs as string[]).includes(c.id))]).toEqual([true, true, true])
   })
@@ -361,15 +364,18 @@ describe("described-shape vessel", () => {
   })
 
   test("[MUST-FAIL] on 62707's real pool (a gap root; sizes, sequence and citations as they were) the edited file's read is shown", async () => {
-    // database's read of the rows the walk gave that producer, scrubbed: ids remapped, paths cut to the clone-relative
-    // part, bodies padded to each row's real size. With the live request schema (the gap variant), the base fill showed
-    // none of the 8 file reads; the edited file's (seq 59472) was older than everything shown.
+    // database's read of the rows the walk gave that producer, scrubbed: ids and call ids remapped, paths cut to the
+    // clone-relative part, bodies padded to each row's real size; each row's links as stored (root, selection_ref,
+    // call_id, a hop's phase and kind), and the request's own selection. With the live request schema (the gap variant),
+    // the base fill showed none of the file reads; the edited file's (seq 59472) was older than everything shown.
     const { gunzipSync } = await import("node:zlib")
     const { readFileSync } = await import("node:fs")
-    const fx = JSON.parse(gunzipSync(readFileSync(new URL("./fixtures/p62707.json.gz", import.meta.url))).toString()) as
-      { root: string; rows: Array<{ id: string; shape: string; seq: number; bytes: number; input_refs: string[]; path?: string; edited?: boolean }> }
+    type FxRow = { id: string; shape: string; seq: number; role: string; bytes: number; input_refs: string[]; path?: string; edited?: boolean } & Record<string, unknown>
+    const fx = JSON.parse(gunzipSync(readFileSync(new URL("./fixtures/p62707.json.gz", import.meta.url))).toString()) as { root: string; sel: string; rows: FxRow[] }
+    const links = ["root", "selection_ref", "call_id", "phase", "kind", "gap_id"]
     const rows = fx.rows.map((r) => {
-      const base = { shape: r.shape, id: r.id, seq: r.seq, role: r.shape === "gap" ? "detector" : "walk", input_refs: r.input_refs, ...(r.path ? { path: r.path } : {}) }
+      const base = { shape: r.shape, id: r.id, seq: r.seq, role: r.role, input_refs: r.input_refs, ...(r.path ? { path: r.path } : {}),
+        ...Object.fromEntries(links.filter((k) => r[k] !== undefined).map((k) => [k, r[k]])) }
       const mark = r.edited ? "EDITED_REAL_FILE " : ""
       const pad = mark + "p".repeat(Math.max(0, r.bytes - JSON.stringify(base).length - 20 - mark.length))
       return r.shape === "hop" ? { ...base, output: { text: pad } } : r.shape === "fileContent" ? { ...base, content: pad } : { ...base, pad }
@@ -383,7 +389,7 @@ describe("described-shape vessel", () => {
     REQUIRES_ROWS = [REQ]
     INPUTS.push(...(rows as any))
     const before = discovery.seen.length
-    const r = await produce(NODE_KEY, { input_refs: rows.map((x) => x.id) })
+    const r = await produce(NODE_KEY, { input_refs: rows.map((x) => x.id), selection_ref: fx.sel })
     INPUTS.splice(INPUTS.length - rows.length, rows.length)
     ;(SCHEMA as any).context = ctx; (SCHEMA as any).inputs = ins
     delete (SCHEMA as any).keep_share
@@ -418,9 +424,10 @@ describe("described-shape vessel", () => {
   })
 
   test("[MUST-FAIL] a kept-shape row reached through another request's lineage is not kept; the newest failure is still shown", async () => {
-    const other = { shape: "gitWorktree", id: "gw-other", seq: 60, repo: "hsv2", cwd: "/trees/OTHER_CLONE", input_refs: ["w9"], note: "o".repeat(3500) }
+    const otherSel = { ...OWN_SELECTION, id: "sel-o", seq: 40, root: "w9", pool_refs: ["w9"] }
+    const other = { shape: "gitWorktree", id: "gw-other", seq: 60, repo: "hsv2", cwd: "/trees/OTHER_CLONE", input_refs: ["w9"], selection_ref: "sel-o", call_id: "c-go", note: "o".repeat(3500) }
     const fail = { shape: "failure", id: "f-new", seq: 200, body: "NEWEST_REFUSAL_REASON" }
-    const r = await keepRun({ keep: true, share: 0.25, extra: [other, fail] })
+    const r = await keepRun({ keep: true, share: 0.25, extra: [otherSel, other, fail] })
     expect(r.prompt).not.toContain("/trees/OTHER_CLONE")
     expect(r.prompt).toContain("/trees/OWN_CLONE")
     expect(r.prompt).toContain("NEWEST_REFUSAL_REASON")
@@ -739,10 +746,10 @@ describe("described-shape vessel", () => {
     })
 
     // Every site that treats an input row apart treats another root's input-shaped row as context.
-    const go = async (o: { inputs: unknown[]; extra: Array<Record<string, unknown>>; share?: number; reqs?: Array<Record<string, unknown>>; hops?: number; selection?: string; refs?: string[] }) => {
+    const go = async (o: { inputs: unknown[]; extra: Array<Record<string, unknown>>; share?: number; reqs?: Array<Record<string, unknown>>; hops?: number; selection?: string; refs?: string[]; context?: unknown[]; withSelections?: boolean }) => {
       const keep = { inputs: SCHEMA.inputs, context: (SCHEMA as any).context, n: INPUTS.length }
       ;(SCHEMA as any).inputs = o.inputs
-      ;(SCHEMA as any).context = ["hop"]
+      ;(SCHEMA as any).context = o.context ?? ["hop"]
       ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer", asks: { "x-inputs": true } }]
       if (o.share !== undefined) (SCHEMA as any).keep_share = o.share
       REQUIRES_ROWS = o.reqs ?? []
@@ -751,7 +758,9 @@ describe("described-shape vessel", () => {
       const add = [...(rows as any[]), ...o.extra, ...hops]
       INPUTS.push(...(add as any[]))
       const before = discovery.seen.length
-      const r = await produce(NODE_KEY, { input_refs: o.refs ?? ["w1", "o-own", ...o.extra.map((x) => String(x.id)), ...hops.map((h) => h.id)], selection_ref: o.selection ?? "sel-w1" })
+      // a live pool holds the selections its rows were made for: withSelections hands the selection rows too
+      const sels = o.withSelections ? (rows as Array<{ shape: string; id: string }>).filter((x) => x.shape === "selection").map((x) => x.id) : []
+      const r = await produce(NODE_KEY, { input_refs: o.refs ?? ["w1", "o-own", ...sels, ...o.extra.map((x) => String(x.id)), ...hops.map((h) => h.id)], selection_ref: o.selection ?? "sel-w1" })
       INPUTS.splice(keep.n)
       ;(SCHEMA as any).inputs = keep.inputs
       ;(SCHEMA as any).context = keep.context
@@ -784,12 +793,105 @@ describe("described-shape vessel", () => {
       expect(r.row.input_refs).not.toContain("o-out")
       expect(r.row.input_refs).toContain("o-own")
     })
-    test("[MUST-FAIL] another root's input-shaped row citing this request's input is kept first as a context row is, under a keep entry", async () => {
+    test("[MUST-FAIL] another root's row under a keep entry is not kept, though it cites this request's input: it is left to the fill", async () => {
       const r = await go({ inputs: ["world_changed", { shape: "outcome", keep: true }], extra: [far("o-kept", 7000)], hops: 80, share: 0.25 })
       expect(r.status).toBe(200)
-      expect(r.prompt).toContain("HEAD_o-kept")
-      expect(r.row.input_refs).toContain("o-kept")
+      expect(r.prompt).not.toContain("HEAD_o-kept")
+      expect(r.row.input_refs).not.toContain("o-kept")
       expect(r.asks).toEqual(["w1", "o-own"])
+    })
+
+    // The keep gate is the root's reading: a row is kept when it names this root, or its selection is this root's; what it
+    // cites does not decide it. Rows in the live forms: a verdict names its
+    // root and cites what it judged; a tool's answer carries the selection its call was made for and the call_id of the
+    // walk's started hop.
+    const verdict = (id: string, root: string, extra: Record<string, unknown> = {}) => ({ shape: "land_verdict", id, seq: 290, role: "person",
+      writer: "hsv", r: 0, root, selection_ref: `so-${id}`, input_refs: [`diff-${id}`], body: `HEAD_${id} ` + "v".repeat(7000), ...extra })
+    const started = (call: string, seq: number, selection: string) => ({ shape: "hop", id: `h-${call}`, seq, phase: "started", kind: "call", call_id: call,
+      selection_ref: selection, output: { text: "" } })
+    const answerOf = (id: string, call: string, seq: number, selection = "sel-w1") => ({ shape: "fileContent", id, seq, role: "walk", writer: "walk-test",
+      call_id: call, selection_ref: selection, input_refs: [], content: `HEAD_${id} ` + "c".repeat(7000) })
+    // a row the producer drafted earlier, linked to its root as live ones are: by the root it names, or by its selection
+    const made = (id: string, seq: number, link: { root?: string; selection_ref?: string }) => ({ shape: "answer", id, seq, role: "described",
+      writer: "described-test", ...link, input_refs: ["w1"], text: "drafted" })
+    const keptEntries = [{ shape: "land_verdict", keep: true }, { answers_a_call: true, keep: true }]
+    test("[MUST-FAIL] a row of this root under a keep entry is kept though it cites none of the request's inputs", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, extra: [verdict("lv-own", "w1")], hops: 80, share: 0.25 })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-own"), (r.row.input_refs as string[]).includes("lv-own")]).toEqual([true, true])
+    })
+    test("[MUST-FAIL] another root's row under a keep entry is not kept, by root alone, whatever it cites", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, extra: [verdict("lv-far", "w9", { input_refs: ["w1"] })], hops: 80, share: 0.25 })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-far"), (r.row.input_refs as string[]).includes("lv-far")]).toEqual([false, false])
+    })
+    test("[MUST-FAIL] the answer of this root's call, made after its last drafted row, is kept; one drafted on already is left to the fill", async () => {
+      const fresh = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [made("an-old", 240, { root: "w1" }), started("cc1", 250, "sel-w1"), answerOf("fc-new", "cc1", 260)] })
+      expect(fresh.status).toBe(200)
+      expect([fresh.prompt.includes("HEAD_fc-new"), (fresh.row.input_refs as string[]).includes("fc-new")]).toEqual([true, true])
+      for (const link of [{ root: "w1" }, { selection_ref: "sel-w1" }]) {
+        const drafted = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+          extra: [started("cc1", 250, "sel-w1"), answerOf("fc-new", "cc1", 260), made("an-later", 270, link)] })
+        expect([JSON.stringify(link), drafted.prompt.includes("HEAD_fc-new"), (drafted.row.input_refs as string[]).includes("fc-new")]).toEqual([JSON.stringify(link), false, false])
+      }
+    })
+    test("[MUST-FAIL] a kept row that answers no call stays kept after a drafted row: only a call's answer is drafted on", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [verdict("lv-own", "w1"), made("an-after-lv", 295, { root: "w1" })] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-own"), (r.row.input_refs as string[]).includes("lv-own")]).toEqual([true, true])
+    })
+    test("[MUST-FAIL] an answer that came back after the last drafted row is kept, though its call started before that row", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [started("cc1", 230, "sel-w1"), made("an-mid", 240, { root: "w1" }), answerOf("fc-late", "cc1", 260)] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_fc-late"), (r.row.input_refs as string[]).includes("fc-late")]).toEqual([true, true])
+    })
+    test("[MUST-FAIL] under a selection whose seq is not known, every drafted row of this root counts: an answer before one is left to the fill", async () => {
+      const { seq: _, ...noSeq } = sel("sel-ns", "w1")
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25, selection: "sel-ns",
+        extra: [noSeq, started("cc1", 250, "sel-ns"), answerOf("fc-ns", "cc1", 260, "sel-ns"), made("an-ns", 270, { root: "w1" })] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_fc-ns"), (r.row.input_refs as string[]).includes("fc-ns")]).toEqual([false, false])
+    })
+    test("[MUST-FAIL] an entry saying answers_a_call false is a named entry: its kept rows are never cut by a drafted row", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", { shape: "land_verdict", answers_a_call: false, keep: true }], withSelections: true, hops: 80, share: 0.25,
+        extra: [verdict("lv-named", "w1"), made("an-after-named", 295, { root: "w1" })] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-named"), (r.row.input_refs as string[]).includes("lv-named")]).toEqual([true, true])
+    })
+    test("[MUST-FAIL] a newer person's mark on the same tree does not take the grader's verdict's place under a role-bound entry", async () => {
+      // the seed's entry is the grader's only: a person's mark (no root, no selection, as live ones are) grades the page,
+      // and without the role it would win latest_by on the tree, then fail the keep gate, leaving neither kept
+      const entry = { shape: "land_verdict", latest_by: "tree", where: { tree: "T1", role: "described" }, keep: true }
+      const graded = verdict("lv-grader", "w1", { tree: "T1", role: "described", seq: 280 })
+      const { root: _r, selection_ref: _s, ...mark } = verdict("lv-mark", "w1", { tree: "T1", role: "person", seq: 290 })
+      const r = await go({ inputs: byShape, context: ["hop", entry], withSelections: true, hops: 80, share: 0.25, extra: [graded, mark] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-grader"), (r.row.input_refs as string[]).includes("lv-grader")]).toEqual([true, true])
+    })
+    test("[GUARD] the answer of another root's call is never kept, however new", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [sel("sel-w9", "w9"), started("cc9", 250, "sel-w9"), answerOf("fc-far", "cc9", 260, "sel-w9")] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_fc-far"), (r.row.input_refs as string[]).includes("fc-far")]).toEqual([false, false])
+    })
+    test("[MUST-FAIL] a drafted row of another root does not mark this root's answers as drafted on", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [started("cc1", 250, "sel-w1"), answerOf("fc-new", "cc1", 260), made("an-far", 270, { root: "w9" })] })
+      expect([r.prompt.includes("HEAD_fc-new"), (r.row.input_refs as string[]).includes("fc-new")]).toEqual([true, true])
+    })
+    test("[MUST-FAIL] a row of this root made after the selection does not mark its answers as drafted on", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25,
+        extra: [started("cc1", 250, "sel-w1"), answerOf("fc-new", "cc1", 260), made("an-after", 310, { root: "w1" })] })
+      expect([r.prompt.includes("HEAD_fc-new"), (r.row.input_refs as string[]).includes("fc-new")]).toEqual([true, true])
+    })
+    test("[GUARD] under a selection naming no root, a row naming an empty root is not kept", async () => {
+      const r = await go({ inputs: byShape, context: ["hop", ...keptEntries], withSelections: true, hops: 80, share: 0.25, selection: "sel-none",
+        extra: [verdict("lv-empty", "")] })
+      expect(r.status).toBe(200)
+      expect([r.prompt.includes("HEAD_lv-empty"), (r.row.input_refs as string[]).includes("lv-empty")]).toEqual([false, false])
     })
     test("[MUST-FAIL] another root's input-shaped row citing this request's input is shown first as a context row is, when a call requires its shape", async () => {
       const req = { shape: "requires", id: "rq-far", seq: 1, role: "owner", for: "git_land", needs: "outcome" }
@@ -1330,7 +1432,9 @@ describe("described-shape vessel", () => {
 
   // The owner seed's request entries: the clone kept, then the clone's newest diff, whole, kept and covering its own hop.
   const XLT = { "x-latest": { shapes: ["gitCommitResult", "gitWorktree", "gitDiff"], moves: ["gitCommitResult", "gitWorktree"], same: "cwd", field: "tree" } }
-  const keptRun = async (context: unknown[], rows: Array<Record<string, unknown>>) => {
+  const OWN_S_W = { shape: "selection", id: "s-w", seq: 9, role: "walk", root: "w1" } // the produce's own selection names the request
+  const keptRun = async (context: unknown[], given: Array<Record<string, unknown>>) => {
+    const rows = given.some((x) => x.id === OWN_S_W.id) ? given : [OWN_S_W, ...given]
     const saved = SCHEMA.context
     ;(SCHEMA as any).context = context
     ;(SCHEMA as any).keep_share = 0.25
@@ -1352,9 +1456,9 @@ describe("described-shape vessel", () => {
       { shape: "gitDiff", latest_by: "shape", where: { tree: XLT, role: "walk" }, whole: true, keep: true, covers: { shape: "hop", on: "call_id" } }]
     const base = [
       { shape: "selection", id: "s-w", seq: 9, role: "walk", root: "w1" }, // the produce's own selection names the request
-      { shape: "gitWorktree", id: "gw-own", seq: 50, role: "walk", call_id: "c-w", repo: "hsv", cwd: "/trees/OWN_CLONE", tree: "TREE_K", input_refs: ["w1"], note: "c".repeat(1000) },
+      { shape: "gitWorktree", id: "gw-own", seq: 50, role: "walk", call_id: "c-w", selection_ref: "s-w", repo: "hsv", cwd: "/trees/OWN_CLONE", tree: "TREE_K", input_refs: ["w1"], note: "c".repeat(1000) },
     ]
-    const diffOf = (bytes: number) => ({ shape: "gitDiff", id: "gd-own", seq: 60, role: "walk", call_id: "c-d", cwd: "/trees/OWN_CLONE", tree: "TREE_K",
+    const diffOf = (bytes: number) => ({ shape: "gitDiff", id: "gd-own", seq: 60, role: "walk", call_id: "c-d", selection_ref: "s-w", cwd: "/trees/OWN_CLONE", tree: "TREE_K",
       input_refs: ["w1"], diff: "d".repeat(bytes), check: { passed: false, out: "CHECK_SAID_WHY" } })
     // a diff that fits the keep share alone but not beside the clone (the share is a quarter of the context budget):
     // listed after the clone, it is the one left out, and named, since its entry shows it whole; never the clone
@@ -1373,7 +1477,7 @@ describe("described-shape vessel", () => {
   test("[GUARD] with one kept entry, its rows are fitted newest first, as before", async () => {
     // a schema with a single kept entry (the outcome grader's request_acts) fits exactly what it did before the order:
     // the newest rows of the entry while they fit, the oldest left to the budget, which the newer hops have spent
-    const acts = Array.from({ length: 8 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 40 + i, role: "walk", input_refs: ["w1"], note: `ACTS_${i} ` + "a".repeat(9000) }))
+    const acts = Array.from({ length: 8 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 40 + i, role: "walk", root: "w1", selection_ref: "s-w", input_refs: ["w1"], note: `ACTS_${i} ` + "a".repeat(9000) }))
     const r = await keptRun(["hop", { shape: "request_acts", where: {}, keep: true }], [...acts, ...newerHops])
     expect(r.status).toBe(200)
     expect([7, 6, 5].map((i) => r.prompt.includes(`ACTS_${i} `))).toEqual([true, true, true])
@@ -1383,9 +1487,9 @@ describe("described-shape vessel", () => {
   test("[GUARD] the answer schema's kept entries, in their order, still show the newest skip", async () => {
     // request_acts (newest only) is listed before the walk's skip failures (newest per request): fitted first, it takes
     // one row of the share, and the skips that follow are fitted newest first in what remains
-    const acts = { shape: "request_acts", id: "ra-n", seq: 45, role: "walk", input_refs: ["w1"], note: "ACTS_NEWEST " + "a".repeat(6000) }
+    const acts = { shape: "request_acts", id: "ra-n", seq: 45, role: "walk", root: "w1", selection_ref: "s-w", input_refs: ["w1"], note: "ACTS_NEWEST " + "a".repeat(6000) }
     const skips = Array.from({ length: 30 }, (_, i) => ({ shape: "failure", id: `fs${i}`, seq: 50 + i, role: "walk", kind: "skip",
-      request_ref: `rq${i}`, input_refs: ["w1"], body: `SKIP_${i} ` + "s".repeat(2000) }))
+      request_ref: `rq${i}`, selection_ref: "s-w", input_refs: ["w1"], body: `SKIP_${i} ` + "s".repeat(2000) }))
     const r = await keptRun(["hop", { shape: "request_acts", latest_by: "shape", keep: true },
       { shape: "failure", where: { kind: "skip" }, latest_by: "request_ref", keep: true }], [acts, ...skips, ...newerHops])
     expect(r.status).toBe(200)
@@ -1547,11 +1651,11 @@ describe("described-shape vessel", () => {
     ;(SCHEMA as any).context = ["hop", { shape: "gitWorktree", latest_by: "repo", keep: true },
       { shape: "gitCommitResult", latest_by: "shape", keep: true }, actsEntry]
     ;(SCHEMA as any).keep_share = 0.25
-    const clone = { shape: "gitWorktree", id: "gw-d", seq: 10, repo: "hsv", cwd: "/trees/D929_CLONE", input_refs: ["w1"] }
-    const commit = { shape: "gitCommitResult", id: "gc-d", seq: 11, sha: "COMMIT_2C73FC3", tree: "t1", input_refs: ["w1"] }
-    const acts = Array.from({ length: 76 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 20 + i, input_refs: ["w1"],
+    const clone = { shape: "gitWorktree", id: "gw-d", seq: 10, repo: "hsv", cwd: "/trees/D929_CLONE", input_refs: ["w1"], selection_ref: "sel-1", call_id: "c-gwd" }
+    const commit = { shape: "gitCommitResult", id: "gc-d", seq: 11, sha: "COMMIT_2C73FC3", tree: "t1", input_refs: ["w1"], selection_ref: "sel-1", call_id: "c-gcd" }
+    const acts = Array.from({ length: 76 }, (_, i) => ({ shape: "request_acts", id: `ra${i}`, seq: 20 + i, root: "w1", selection_ref: "sel-1", input_refs: ["w1"],
       acts: Array.from({ length: i + 1 }, (_, j) => `act-${j} ` + "a".repeat(90)) }))
-    const rows = [clone, commit, ...acts]
+    const rows = [OWN_SELECTION, clone, commit, ...acts]
     INPUTS.push(...(rows as any))
     const before = discovery.seen.length
     const r = await produce(NODE_KEY, { input_refs: ["w1", ...rows.map((x) => x.id)] })

@@ -1700,6 +1700,16 @@ describe("an entry by relation: the answer of a tool call this request's root ma
     expect(prompt).toContain("grep found it in B")
     expect(prompt).not.toContain("an answer to no hop")
   })
+  test("[MUST-FAIL] only a STARTED hop makes a call: an ended hop whose started row is not in the pool admits nothing", async () => {
+    // a pool can hold a call's ended hop and not its started one (the started row clipped from it); the ended hop names
+    // the call but does not show it was this request's to make
+    const { prompt } = await withRows([
+      { shape: "hop", id: "hEnd", role: "walk", phase: "ended", kind: "call", call_id: "kEnd", selection_ref: "sB", output: { text: "ended" } },
+      { shape: "boundedShellResult", id: "aEnd", role: "walk", call_id: "kEnd", selection_ref: "sB", stdout: "an answer to a call only seen ending" },
+    ], [{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).not.toContain("an answer to a call only seen ending")
+  })
   test("a hop whose call_id is not a string makes no call: an answer naming the same digits is not admitted (a guard)", async () => {
     const { prompt } = await withRows([
       { shape: "hop", id: "hNum", role: "walk", phase: "started", kind: "call", call_id: 5, selection_ref: "sB" },

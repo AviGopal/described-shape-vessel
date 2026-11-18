@@ -2215,6 +2215,16 @@ describe("what each produce cost and who answered it: kept as spend, and never s
     const r = await run(null, { input_refs: ["w1", "sp-h3"] }, [hop])
     expect([r.status, r.prompt.includes('"spend":"a tool\'s own word"'), r.prompt.includes('"spend":null')]).toEqual([200, true, true])
   })
+  test("[MUST-FAIL] an input row carrying a spend renders without it: the prompt is byte-equal to the same row without one", async () => {
+    const given = { shape: "world_changed", id: "sp-in", what: "a described row a grader is given" }
+    const plain = await run(null, { input_refs: ["sp-in"] }, [given])
+    const spent = await run(null, { input_refs: ["sp-in"] }, [{ ...given, spend: SPENT }])
+    expect([plain.status, spent.status, spent.prompt.includes("a described row a grader is given"), spent.prompt === plain.prompt]).toEqual([200, 200, true, true])
+  })
+  test("an empty model or fallback is no field (a guard)", async () => {
+    const r = await run({ content: JSON.stringify({ text: "hi" }), model: "", fallback_from: "", usage: { output_tokens: 3 } })
+    expect([r.status, r.row?.spend]).toEqual([200, { prompt_bytes: r.promptBytes, output_tokens: 3 }])
+  })
   test("no fallback, no field; no usage, no output tokens (a guard)", async () => {
     const r = await run({ content: JSON.stringify({ text: "hi" }), model: "model-served" })
     expect([r.status, r.row?.spend]).toEqual([200, { model: "model-served", prompt_bytes: r.promptBytes }])

@@ -47,6 +47,8 @@ let moreSchemas: Array<Record<string, unknown>> = []
 
 let llmContent = JSON.stringify({ text: "hi" })
 let llmFailure: Record<string, unknown> | null = null
+// What a read answering with rows inside an object (rows_in_object) answers
+let OBJECT_READ: Record<string, unknown> = { rows: [] }
 let vesselErr = ""
 // discovery's own answer when no producer serves the model's shape (it never reached a resolver)
 let llmUnrouted = false
@@ -70,6 +72,7 @@ const resolve = (p: Record<string, any>): Response => {
   if (p.type === "shapeDescriptions") return readsDown
     ? Response.json({ error: "down" }, { status: 503 })
     : Response.json({ content: { shape_descriptions: { fs_read: "produces file content from a path" }, data_shapes: { hop: "a record of a call" }, ...DECL } })
+  if (p.type === "rows_in_object") return Response.json(OBJECT_READ)
   if (p.type === "record_lapsed") return Response.json(LAPSED.filter((r) => !Array.isArray(p.asks) || r.input_refs.some((id) => p.asks.includes(id))))
   if (p.type === "llm_completion" && llmUnrouted) return Response.json({ error: "Not found", shape: "llm_completion", unserved: "llm_completion" }, { status: 404 })
   if (p.type === "llm_completion") return Response.json(llmFailure ?? { content: llmContent, model: "model-served" })
@@ -2001,6 +2004,24 @@ describe("a shown row may be cited by the seq the prompt shows; a row named insi
     const r = await gapOf(["31337"])
     expect(r.failure.context_gap).toEqual([{ value: "31337", seen_in: "cg-h1" }])
   })
+  test("[MUST-FAIL] a row a read returned is shown without its spend: the prompt is byte-equal to the same read without one", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    const plain = await cite({ evidence_refs: ["cg-h1"] })
+    ;(LAPSED[1] as any).spend = { model: "model-elsewhere", prompt_bytes: 30555, output_tokens: 9 }
+    const spent = await cite({ evidence_refs: ["cg-h1"] })
+    delete (LAPSED[1] as any).spend
+    delete (SCHEMA as any).reads
+    expect([plain.status, spent.status, spent.prompt.includes('"d9"'), spent.prompt === plain.prompt]).toEqual([200, 200, true, true])
+  })
+  test("[MUST-FAIL] a number only in a read row's spend is not a context gap: citing it is charged as written", async () => {
+    ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
+    ;(LAPSED[1] as any).spend = { model: "model-elsewhere", prompt_bytes: 30555, output_tokens: 9 }
+    const pooled = { shape: "gap", id: "cg-sp", seq: 30555, summary: "a pool row whose seq a spend's bytes equal" }
+    const r = await cite({ evidence_refs: ["30555"] }, [...REFS, "cg-sp"], [pooled])
+    delete (LAPSED[1] as any).spend
+    delete (SCHEMA as any).reads
+    expect([r.status, r.failure?.refused, "context_gap" in (r.failure ?? {})]).toEqual([422, "schema", false])
+  })
   test("[MUST-FAIL] a row a read returned that it may not cite is a context gap: the producer was shown it; still refused, never stored", async () => {
     ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer" }]
     const r = await gapOf(["d9"])
@@ -2143,6 +2164,56 @@ describe("what each produce cost and who answered it: kept as spend, and never s
     ;(SCHEMA as any).context = keep
     const told = (JSON.parse(r.prompt).not_shown_whole ?? []).find((x: any) => x.id === "sp-f")
     expect([r.status, told?.bytes]).toEqual([200, JSON.stringify(file).length])
+  })
+  test("[MUST-FAIL] an input too big to show whole is refused at its size without its spend", async () => {
+    const big: Record<string, any> = { shape: "world_changed", id: "sp-x", what: "" }
+    big.what = "x".repeat(97 * 1024)
+    const r = await run(null, { input_refs: ["sp-x"] }, [{ ...big, spend: SPENT }])
+    expect([r.status, String(r.failure?.body ?? "").includes(`world_changed sp-x (${JSON.stringify(big).length} bytes)`)]).toEqual([422, true])
+  })
+  test("[MUST-FAIL] a spend nested in a shown row (a hop's output is the produced row, spend and all) renders without it", async () => {
+    const hop = { shape: "hop", id: "sp-h2", seq: 9002, output: { shape: "answer", id: "a1", text: "an answer produced earlier", spend: SPENT } }
+    const r = await run(null, { input_refs: ["w1", "sp-h2"] }, [hop])
+    expect([r.status, r.prompt.includes("an answer produced earlier"), r.prompt.includes("model-elsewhere"), r.prompt.includes('"spend"')]).toEqual([200, true, false, false])
+  })
+  test("[MUST-FAIL] a read answering with rows inside an object shows them without their spend", async () => {
+    ;(SCHEMA as any).reads = [{ type: "rows_in_object" }]
+    OBJECT_READ = { rows: [{ shape: "answer", id: "o1", text: "a row inside an object", spend: SPENT }], newest: { shape: "answer", id: "o2", spend: SPENT } }
+    const r = await run(null)
+    OBJECT_READ = { rows: [] }
+    delete (SCHEMA as any).reads
+    expect([r.status, r.prompt.includes("a row inside an object"), r.prompt.includes('"o2"'), r.prompt.includes("model-elsewhere"), r.prompt.includes('"spend"')]).toEqual([200, true, true, false, false])
+  })
+  test("[MUST-FAIL] a value only in a read row's spend is not one of what shown rows hold (x-in)", async () => {
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = { type: "object", required: ["text", "by"], properties: { text: { type: "string" }, by: { type: "string", "x-in": { shape: "answer", path: "spend.model" } } } }
+    ;(SCHEMA as any).reads = [{ type: "rows_in_object", shown: true }]
+    OBJECT_READ = [{ shape: "answer", id: "o3", text: "t", spend: SPENT }] as any
+    llmContent = JSON.stringify({ text: "t", by: "model-elsewhere" })
+    const r = await produce(NODE_KEY)
+    OBJECT_READ = { rows: [] }
+    delete (SCHEMA as any).reads
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(422)
+  })
+  test("[MUST-FAIL] a key only in a read answer's spend is not among the keys it answered (x-shape-in)", async () => {
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = { type: "object", required: ["text", "by"], properties: { text: { type: "string" }, by: { type: "string", "x-shape-in": { read: "rows_in_object", keys_of: "spend" } } } }
+    ;(SCHEMA as any).reads = [{ type: "rows_in_object" }]
+    OBJECT_READ = { served: { fs_read: "x" }, spend: { "model-elsewhere": 1 } }
+    llmContent = JSON.stringify({ text: "t", by: "model-elsewhere" })
+    const r = await produce(NODE_KEY)
+    OBJECT_READ = { rows: [] }
+    delete (SCHEMA as any).reads
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(422)
+  })
+  test("a spend that is not an object is a tool's own value, shown as it was (a guard)", async () => {
+    const hop = { shape: "hop", id: "sp-h3", seq: 9003, output: { spend: "a tool's own word", none: { spend: null } } }
+    const r = await run(null, { input_refs: ["w1", "sp-h3"] }, [hop])
+    expect([r.status, r.prompt.includes('"spend":"a tool\'s own word"'), r.prompt.includes('"spend":null')]).toEqual([200, true, true])
   })
   test("no fallback, no field; no usage, no output tokens (a guard)", async () => {
     const r = await run({ content: JSON.stringify({ text: "hi" }), model: "model-served" })

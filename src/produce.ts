@@ -125,10 +125,15 @@ const spendOf = (result: Record<string, unknown>, producerField: string, promptB
     prompt_bytes: promptBytes,
   }
 }
-const unspent = (r: Row): Row => {
-  if (!("spend" in r)) return r
-  const { spend: _s, ...rest } = r
-  return rest as Row
+// A spend is left out wherever it sits in a row (a hop's output is the produced row, spend and all) or in a read's
+// answer (a list of rows, or rows inside an object): only an object under the key spend, so a tool's own value of that
+// name is shown as it was.
+const unspent = <T>(v: T): T => {
+  if (Array.isArray(v)) return v.map(unspent) as T
+  if (typeof v !== "object" || v === null) return v
+  return Object.fromEntries(Object.entries(v)
+    .filter(([k, x]) => k !== "spend" || typeof x !== "object" || x === null)
+    .map(([k, x]) => [k, unspent(x)])) as T
 }
 // One journal line per refused produce: what was asked for, why, how the answer ended and how big the prompt was. Never
 // the prompt or the answer (they carry whatever the rows did).
@@ -380,9 +385,11 @@ const make = async (p: Ask): Promise<Response> => {
     if (!r.ok) {
       return fail(r.status, r.text, unservedOf(r.text))
     }
-    looked.push(r.body)
-    if (mark === true) ownerShown.push(r.body)
-    answered.push({ type: String((pointer as { type?: unknown }).type), answer: r.body })
+    // What a read answers is shown and cited as it is, less any spend in it, which is never shown
+    const body = unspent(r.body)
+    looked.push(body)
+    if (mark === true) ownerShown.push(body)
+    answered.push({ type: String((pointer as { type?: unknown }).type), answer: body })
   }
   // A row the schema shows only as context is cut past a size and marked as cut, so one oversized row (a tool's whole
   // stdout recorded in a hop) cannot push every prompt that reads it past the model's input ceiling; it still counts as
@@ -390,7 +397,7 @@ const make = async (p: Ask): Promise<Response> => {
   // whole (a grader shown part of a diff), so an input past the size is refused, by name, rather than cut.
   const tooBig = used.filter((r) => isInput(r) && JSON.stringify(unspent(r)).length > INPUT_ROW_MAX)
   if (tooBig.length > 0) {
-    return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(r).length} bytes)`).join(", ")}`)
+    return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(unspent(r)).length} bytes)`).join(", ")}`)
   }
   // Context rows grow with a request's age (every hop and failure of a long change), and a prompt holding them all went
   // past the model's input ceiling: the producer was refused and the request went dark. So the context rows are taken

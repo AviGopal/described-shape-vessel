@@ -220,9 +220,11 @@ const make = async (p: Ask): Promise<Response> => {
   // Nor does such a row displace one of the request's own under an input entry's latest_by: it is kept apart there.
   if (used.some((r) => inputs.has(String(r.shape)) && r.root !== undefined)) await rootOf()
   const rootRow = all.find((r) => r.id === rootId)
+  // a gap is one gap only by a real id: an absent, null or empty gap_id names no gap
+  const isGapId = (v: unknown): boolean => v !== undefined && v !== null && v !== ""
   const sameGap = (id: string): boolean => {
     const x = all.find((r) => r.id === id)
-    return rootRow?.gap_id !== undefined && x !== undefined && x.shape === rootRow.shape && x.role === rootRow.role &&
+    return rootRow !== undefined && isGapId(rootRow.gap_id) && x !== undefined && x.shape === rootRow.shape && x.role === rootRow.role &&
       JSON.stringify(x.gap_id) === JSON.stringify(rootRow.gap_id)
   }
   const elsewhere = (r: Row): boolean => r.root !== undefined && rootId !== undefined && rootId !== "" && r.root !== rootId && !sameGap(String(r.root))

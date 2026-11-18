@@ -818,6 +818,16 @@ describe("described-shape vessel", () => {
       expect(r.status).toBe(200)
       expect(r.asks).toContain("o-gn2")
     })
+    // gap_ids are compared by value and type: two distinct object ids are two gaps, and 7 and "7" are two gaps, since one
+    // writer's id never changes type and a coerced match would join another writer's gap
+    for (const [a, b] of [[{ a: 1 }, { b: 2 }], [[1], "1"], [7, "7"]] as unknown[][]) {
+      test(`[GUARD] two gaps whose gap_ids are ${JSON.stringify(a)} and ${JSON.stringify(b)} are not one gap: the other's outcome is not an input`, async () => {
+        const r = await go({ inputs: ["gap", "outcome"], extra: [{ ...gap("go2", 380), gap_id: a }, { ...gap("go3", 400), gap_id: b }, sel("sel-go3", "go3"), outcome("o-go2", 395, "go2", "go2")],
+          selection: "sel-go3", refs: ["go2", "go3", "o-go2"] })
+        expect(r.status).toBe(200)
+        expect(r.asks).not.toContain("o-go2")
+      })
+    }
     // two asks of one shape and role that are not gaps: one with no gap_id, then null, then empty
     const ask = (id: string, gapId: unknown) => ({ shape: "world_changed", id, seq: 200, role: "person", writer: "hsv", input_refs: [],
       ...(gapId === "absent" ? {} : { gap_id: gapId }) })

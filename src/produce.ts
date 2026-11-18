@@ -72,8 +72,8 @@ export const unservedOf = (answer: unknown): string | undefined => {
 }
 // The producer's answer did not fit the schema. Marked, so a caller tells this apart from a 422 passed through from a read
 // or a write: asking again over the same inputs is likely refused the same way, which a pass-through says nothing about.
-const refusedBySchema = (body: string, end: Ending = {}, gap?: ContextGap, resolved: SeqResolved = []): Response =>
-  Response.json({ failure: { status: 422, body, refused: "schema", ...end, ...(gap !== undefined ? { context_gap: gap } : {}), ...seqResolvedOf(resolved) } }, { status: 422 })
+const refusedBySchema = (body: string, end: Ending = {}, gap?: ContextGap, resolved: SeqResolved = [], spend?: Spend): Response =>
+  Response.json({ failure: { status: 422, body, refused: "schema", ...end, ...(gap !== undefined ? { context_gap: gap } : {}), ...seqResolvedOf(resolved), ...(spend !== undefined ? { spend } : {}) } }, { status: 422 })
 // The citations this vessel resolved from a seq to a row's id, said on what it writes and on what it refuses after, so a
 // reader can count the answers that went through it (at most 20, as context_gap). This vessel's own record, never the
 // model's: a seq_resolved in what the model wrote is dropped.
@@ -109,6 +109,26 @@ const endingOf = (result: Record<string, unknown>): Ending => {
   const stop = result.stop_reason
   const out = (result.usage as { output_tokens?: unknown } | undefined)?.output_tokens
   return { ...(typeof stop === "string" && stop !== "" ? { stop_reason: stop } : {}), ...(typeof out === "number" ? { output_tokens: out } : {}) }
+}
+// What a produce cost and who answered it, kept as one record (spend): the model that answered (the channel's producer
+// field), the one it fell back from when it did, the prompt's size in bytes, and how the answer ended. It is said on the
+// row written and on every refusal after the channel answered, so the spend of every produce, kept or refused, can be
+// counted from the rows. It is bookkeeping, never evidence: no prompt shows it (unspent), so it costs no later producer a
+// byte. This vessel's own record: a spend in what the model wrote is dropped.
+type Spend = Ending & { model?: string; fallback_from?: string; prompt_bytes: number }
+const spendOf = (result: Record<string, unknown>, producerField: string, promptBytes: number): Spend => {
+  const model = producerField !== "" ? result[producerField] : undefined
+  const from = result.fallback_from
+  return {
+    ...endingOf(result),
+    ...(typeof model === "string" && model !== "" ? { model } : {}), ...(typeof from === "string" && from !== "" ? { fallback_from: from } : {}),
+    prompt_bytes: promptBytes,
+  }
+}
+const unspent = (r: Row): Row => {
+  if (!("spend" in r)) return r
+  const { spend: _s, ...rest } = r
+  return rest as Row
 }
 // One journal line per refused produce: what was asked for, why, how the answer ended and how big the prompt was. Never
 // the prompt or the answer (they carry whatever the rows did).
@@ -317,7 +337,7 @@ const make = async (p: Ask): Promise<Response> => {
   }
   used = used.filter((r) => !left.has(r.id))
   const isWhole = (r: Row): boolean => !isInput(r) && entryOf(r)?.whole === true
-  const shownAs = (r: Row): Row => isInput(r) ? r : clip(r, isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
+  const shownAs = (r: Row): Row => isInput(r) ? unspent(r) : clip(unspent(r), isWhole(r) ? INPUT_ROW_MAX : CONTEXT_ROW_MAX)
   const looked: unknown[] = []
   const answered: Array<{ type: string; answer: unknown }> = []
   // A read pointer value {"x-inputs": true} is bound to the ids of the input rows shown, so a read the owner scopes to
@@ -368,7 +388,7 @@ const make = async (p: Ask): Promise<Response> => {
   // stdout recorded in a hop) cannot push every prompt that reads it past the model's input ceiling; it still counts as
   // used. A row the schema takes as an INPUT is what the answer is about, and a cut one could be judged as if it were
   // whole (a grader shown part of a diff), so an input past the size is refused, by name, rather than cut.
-  const tooBig = used.filter((r) => isInput(r) && JSON.stringify(r).length > INPUT_ROW_MAX)
+  const tooBig = used.filter((r) => isInput(r) && JSON.stringify(unspent(r)).length > INPUT_ROW_MAX)
   if (tooBig.length > 0) {
     return fail(422, `input rows too big to show whole: ${tooBig.map((r) => `${String(r.shape)} ${r.id} (${JSON.stringify(r).length} bytes)`).join(", ")}`)
   }
@@ -473,7 +493,7 @@ const make = async (p: Ask): Promise<Response> => {
   // newest of (latest_by), when it has one; the fields are the owner's, as the entry's are.
   const notShownWhole = used.filter((r) => !isInput(r) && !fitted.has(r.id) && isWhole(r)).slice(0, 20).map((r) => {
     const by = entryOf(r)?.latest_by
-    return { shape: r.shape, id: r.id, bytes: JSON.stringify(r).length, ...(typeof by === "string" && r[by] !== undefined ? { [by]: r[by] } : {}) }
+    return { shape: r.shape, id: r.id, bytes: JSON.stringify(unspent(r)).length, ...(typeof by === "string" && r[by] !== undefined ? { [by]: r[by] } : {}) }
   })
   // Rows a read answered with are shown too. One that cites an input row (a deadline of this request) is cited beside the
   // inputs, so a grade judging it names a row it was given; one that does not (another request's deadline, a gap) is
@@ -512,15 +532,17 @@ const make = async (p: Ask): Promise<Response> => {
     // The text that failed to parse is the evidence of why; carry its start. An answer the model's output limit cut short
     // says so first, in plain words, so it is not read as a malformed answer: what fixes it is a smaller answer.
     const end = endingOf(last.result)
+    const spend = spendOf(last.result, last.field, promptBytes)
     const why = end.stop_reason === "max_tokens" ? `output cut at the model's output limit after ${end.output_tokens ?? "an unknown number of"} tokens` : String(e)
     journalRefused(p.shape, end.stop_reason === "max_tokens" ? "output cut" : "not JSON", end, promptBytes)
-    return Response.json({ failure: { status: 422, body: `${why}; text began: ${JSON.stringify(text.slice(0, 200))}`, ...end } }, { status: 422 })
+    return Response.json({ failure: { status: 422, body: `${why}; text began: ${JSON.stringify(text.slice(0, 200))}`, ...end, spend } }, { status: 422 })
   }
   const ending = endingOf(last.result)
+  const spend = spendOf(last.result, last.field, promptBytes)
   const resolved: SeqResolved = []
   const refused = (body: string, gap?: ContextGap): Response => {
     journalRefused(p.shape, gap !== undefined ? "schema, context gap" : "schema", ending, promptBytes)
-    return refusedBySchema(body, ending, gap, resolved)
+    return refusedBySchema(body, ending, gap, resolved, spend)
   }
   // A row it may cite, named by the seq the prompt showed for it, is that row: its id is what is checked and stored. Only
   // a seq the prompt rendered: a clipped row shows none. A seq two rows shown share (a read answering from another
@@ -617,7 +639,7 @@ const make = async (p: Ask): Promise<Response> => {
   // exactly (a row's input_refs hold the whole pool it was shown, other requests' rows among them). The selection's,
   // never the model's: a root in what the model wrote is dropped.
   await rootOf()
-  const { context_omitted: _o, oldest_shown_seq: _s, root: _r, seq_resolved: _q, ...said } = body as Record<string, unknown>
+  const { context_omitted: _o, oldest_shown_seq: _s, root: _r, seq_resolved: _q, spend: _p, ...said } = body as Record<string, unknown>
   const row = {
     ...said,
     shape: p.shape,
@@ -629,6 +651,7 @@ const make = async (p: Ask): Promise<Response> => {
     selection_ref: p.selection_ref,
     call_id: p.call_id,
     producer: String(last.result[last.field]),
+    spend,
   }
   const w = await records(RECORD_WRITE, { row, writer: VESSEL_ID, role: DESCRIBED })
   if (!w.ok) {

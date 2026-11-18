@@ -1994,7 +1994,7 @@ describe("a shown row may be cited by the seq the prompt shows; a row named insi
   })
   test("[MUST-FAIL] a pool row named inside a shown row (a list, an object in a list) is a context gap, in the envelope the walk reads", async () => {
     const r = await gapOf(["g1", "f1"])
-    expect(r.failure).toEqual({ status: 422, body: expect.any(String), refused: "schema",
+    expect(r.failure).toEqual({ status: 422, body: expect.any(String), refused: "schema", spend: expect.any(Object),
       context_gap: [{ value: "g1", seen_in: "cg-h1" }, { value: "f1", seen_in: "cg-h1" }] })
   })
   test("[MUST-FAIL] a number inside a shown row naming a pool row's seq is a context gap", async () => {
@@ -2075,5 +2075,77 @@ describe("seqsToIds says where each resolution sat, however deep", () => {
     const { seqsToIds } = await import("../src/check")
     const resolved: Array<{ at: string; seq: string; id: string }> = []
     expect([seqsToIds({ type: "string", "x-shown": true }, "7", BY_SEQ, resolved), resolved]).toEqual(["row-b", [{ at: "/", seq: "7", id: "row-b" }]])
+  })
+})
+
+describe("what each produce cost and who answered it: kept as spend, and never shown to a later producer", () => {
+  const answer = (content: unknown, extra: Record<string, unknown> = {}) =>
+    ({ content: typeof content === "string" ? content : JSON.stringify(content), model: "model-served", usage: { output_tokens: 77 }, ...extra })
+  const run = async (reply: Record<string, unknown> | null, more: Record<string, unknown> = {}, rows: Array<Record<string, unknown>> = []) => {
+    llmFailure = reply
+    INPUTS.push(...(rows as any[]))
+    const before = discovery.seen.length
+    const r = await produce(NODE_KEY, more)
+    INPUTS.splice(INPUTS.length - rows.length, rows.length)
+    llmFailure = null
+    const calls = discovery.seen.slice(before)
+    const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+    const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
+    return { status: r.status, failure: r.body?.failure, row, prompt, promptBytes: Buffer.byteLength(prompt) }
+  }
+  const SPENT = { model: "model-elsewhere", prompt_bytes: 123456, output_tokens: 9, stop_reason: "end_turn", note: "S".repeat(500) }
+
+  test("[MUST-FAIL] a produced row's spend: the model, its fallback, the prompt's bytes, the output tokens", async () => {
+    const r = await run(answer({ text: "hi" }, { fallback_from: "model-asked" }))
+    expect([r.status, r.row?.spend]).toEqual([200, { model: "model-served", fallback_from: "model-asked", prompt_bytes: r.promptBytes, output_tokens: 77 }])
+  })
+  test("[MUST-FAIL] a schema refusal and an answer that is not JSON each carry the spend", async () => {
+    const schema = await run(answer({ not_text: 1 }))
+    const prose = await run(answer("not json"))
+    expect([schema.failure?.refused, schema.failure?.spend, prose.failure?.spend]).toEqual(["schema",
+      { model: "model-served", prompt_bytes: schema.promptBytes, output_tokens: 77 }, { model: "model-served", prompt_bytes: prose.promptBytes, output_tokens: 77 }])
+  })
+  test("[MUST-FAIL] a row's spend is never shown: a context row carrying one renders without it", async () => {
+    const hop = { shape: "hop", id: "sp-h1", seq: 9001, output: { text: "a hop that was produced" }, spend: SPENT }
+    const r = await run(null, { input_refs: ["w1", "sp-h1"] }, [hop])
+    expect([r.status, r.prompt.includes("a hop that was produced"), r.prompt.includes("model-elsewhere"), r.prompt.includes('"spend"')]).toEqual([200, true, false, false])
+  })
+  test("[MUST-FAIL] the fill spends nothing on spend: rows that fill the budget exactly without it still all fit", async () => {
+    // 64 context rows of exactly 3072 bytes as shown fill the 192 KiB budget to the byte; each also carries a spend
+    const sized = (i: number) => {
+      const r: Record<string, any> = { shape: "hop", id: `sp-q${i}`, seq: 3000 + i, output: { text: "" } }
+      r.output.text = "q".repeat(3072 - JSON.stringify(r).length)
+      return { ...r, spend: SPENT }
+    }
+    const rows = Array.from({ length: 64 }, (_, i) => sized(i))
+    const r = await run(null, { input_refs: ["w1", ...rows.map((x) => x.id)] }, rows)
+    expect([r.status, rows.filter((x) => r.prompt.includes(`"id":"${x.id}"`)).length]).toEqual([200, 64])
+  })
+  test("[MUST-FAIL] an input row is held to its size without its spend: just under the max, it is shown whole", async () => {
+    const big: Record<string, any> = { shape: "world_changed", id: "sp-w", what: "" }
+    big.what = "w".repeat(96 * 1024 - 64 - JSON.stringify(big).length)
+    const r = await run(null, { input_refs: ["sp-w"] }, [{ ...big, spend: SPENT }])
+    expect([JSON.stringify(big).length < 96 * 1024, JSON.stringify({ ...big, spend: SPENT }).length > 96 * 1024, r.status]).toEqual([true, true, 200])
+  })
+  test("[MUST-FAIL] a spend the model wrote is never kept, whether it wrote an object or not", async () => {
+    const obj = await run(answer({ text: "hi", spend: { model: "forged", prompt_bytes: 1 } }))
+    const str = await run(answer({ text: "hi", spend: "forged" }))
+    expect([obj.row?.spend?.model, obj.row?.spend?.prompt_bytes, str.row?.spend?.model]).toEqual(["model-served", obj.promptBytes, "model-served"])
+  })
+  test("[MUST-FAIL] a whole row left out is reported at its size as shown, without its spend", async () => {
+    const keep = (SCHEMA as any).context
+    ;(SCHEMA as any).context = [{ shape: "fileContent", whole: true, latest_by: "path" }]
+    // a whole row under the input maximum, older than newer hops that fill the budget, so it is left out whole
+    ;(SCHEMA as any).context = ["hop", { shape: "fileContent", whole: true, latest_by: "path" }]
+    const file: Record<string, any> = { shape: "fileContent", id: "sp-f", seq: 1, path: "src/big.ts", content: "f".repeat(90 * 1024) }
+    const hops = Array.from({ length: 70 }, (_, i) => ({ shape: "hop", id: `sp-b${i}`, seq: 5000 + i, output: { text: "x".repeat(3000) } }))
+    const r = await run(null, { input_refs: ["w1", "sp-f", ...hops.map((h) => h.id)] }, [{ ...file, spend: SPENT }, ...hops])
+    ;(SCHEMA as any).context = keep
+    const told = (JSON.parse(r.prompt).not_shown_whole ?? []).find((x: any) => x.id === "sp-f")
+    expect([r.status, told?.bytes]).toEqual([200, JSON.stringify(file).length])
+  })
+  test("no fallback, no field; no usage, no output tokens (a guard)", async () => {
+    const r = await run({ content: JSON.stringify({ text: "hi" }), model: "model-served" })
+    expect([r.status, r.row?.spend]).toEqual([200, { model: "model-served", prompt_bytes: r.promptBytes }])
   })
 })

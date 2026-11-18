@@ -1682,6 +1682,63 @@ describe("an entry by relation: the answer of a tool call this request's root ma
     const { prompt } = await promptFor(["world_changed"])
     for (const t of ["grep found it in B", "old_string not found in B", "an answer of root A", "a draft the producer wrote"]) expect(prompt).not.toContain(t)
   })
+  // A call is a started HOP's call_id, as a string: a row of another shape claiming the same phase and kind, or a hop
+  // whose call_id is a number, makes no call.
+  const withRows = async (extra: Array<Record<string, unknown>>, context: unknown[], share?: number) => {
+    rows.push(...(extra as any[])); ids.push(...extra.map((r) => String(r.id)))
+    if (share !== undefined) (SCHEMA as any).keep_share = share
+    try { return await promptFor(context) } finally {
+      rows.splice(rows.length - extra.length, extra.length); ids.splice(ids.length - extra.length, extra.length)
+      delete (SCHEMA as any).keep_share
+    }
+  }
+  test("[MUST-FAIL] a row that is not a hop makes no call, though it says started, a call kind, a call_id and this root's selection", async () => {
+    const { prompt } = await withRows([
+      { shape: "activity_template", id: "xT", role: "walk", phase: "started", kind: "call", call_id: "kX", selection_ref: "sB" },
+      { shape: "boundedShellResult", id: "aX", role: "walk", call_id: "kX", selection_ref: "sB", stdout: "an answer to no hop" },
+    ], [{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).not.toContain("an answer to no hop")
+  })
+  test("a hop whose call_id is not a string makes no call: an answer naming the same digits is not admitted (a guard)", async () => {
+    const { prompt } = await withRows([
+      { shape: "hop", id: "hNum", role: "walk", phase: "started", kind: "call", call_id: 5, selection_ref: "sB" },
+      { shape: "boundedShellResult", id: "aNum", role: "walk", call_id: "5", selection_ref: "sB", stdout: "an answer to a numbered call" },
+    ], [{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).not.toContain("an answer to a numbered call")
+  })
+  test("an entry saying answers_a_call false admits nothing, and leaves the prompt as it is without it (a guard)", async () => {
+    const without = await promptFor(["world_changed"])
+    const withFalse = await promptFor(["world_changed", { answers_a_call: false }])
+    expect(withFalse.prompt).toBe(without.prompt)
+  })
+  // The entry a relational row was admitted by is its entry everywhere after: its latest_by, its place in the owner's
+  // list, and its own key apart from another relational entry's.
+  test("[MUST-FAIL] a relational entry's latest_by applies to the answers it admits: of two answers to one call, the newer only", async () => {
+    const { prompt } = await withRows([
+      { shape: "boundedShellResult", id: "aBold", seq: -1, role: "walk", call_id: "kB", selection_ref: "sB", stdout: "the older answer to kB" },
+    ], [{ answers_a_call: true, latest_by: "call_id" }])
+    expect(prompt).not.toContain("the older answer to kB")
+    expect(prompt).toContain("grep found it in B")
+  })
+  test("[MUST-FAIL] two relational entries keep their newest apart: one per entry, not one for both", async () => {
+    const { prompt } = await promptFor([
+      { answers_a_call: true, where: { shape: "boundedShellResult" }, latest_by: "role" },
+      { answers_a_call: true, where: { shape: "failure" }, latest_by: "role" },
+    ])
+    expect(prompt).toContain("grep found it in B")
+    expect(prompt).toContain("old_string not found in B")
+  })
+  test("[MUST-FAIL] a relational kept entry is fitted where the owner lists it: a named entry listed before it is fitted first", async () => {
+    const hops = Array.from({ length: 80 }, (_, i) => ({ shape: "hop", id: `hK${i}`, seq: 100 + i, role: "walk", output: { text: `kstep-${i}. ` + "x".repeat(3000) } }))
+    const { prompt } = await withRows([
+      { shape: "gitWorktree", id: "gwK", seq: 5, role: "walk", call_id: "kG", selection_ref: "sB", input_refs: ["w1"], cwd: "/trees/LISTED_FIRST", note: "c".repeat(15000) },
+      { shape: "hop", id: "hS", seq: 6, role: "walk", phase: "started", kind: "call", call_id: "kS", selection_ref: "sB" },
+      { shape: "boundedShellResult", id: "aS", seq: 7, role: "walk", call_id: "kS", selection_ref: "sB", input_refs: ["w1"], stdout: "LISTED_SECOND " + "s".repeat(6000) },
+      ...hops,
+    ], ["hop", { shape: "gitWorktree", keep: true }, { answers_a_call: true, keep: true }], 0.05)
+    expect(prompt).toContain("/trees/LISTED_FIRST")
+  })
   test("[MUST-FAIL] only answers_a_call: true is the relation; another value is no entry of it, even beside a true one", async () => {
     // the "yes" entry would admit the shell result; the true entry admits only failures
     const { prompt } = await promptFor([{ answers_a_call: "yes", where: { shape: "boundedShellResult" } }, { answers_a_call: true, where: { shape: "failure" } }])

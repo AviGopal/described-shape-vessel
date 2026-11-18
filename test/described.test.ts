@@ -673,6 +673,72 @@ describe("described-shape vessel", () => {
     expect(prompt).not.toContain('"d9"')
   })
 
+  // D1: a handed row made on another root (its root is not the selection's) is context, never an input, even when its
+  // shape is an input shape: not bound by an x-inputs read, and never displacing the request's own row under an input
+  // entry's latest_by. Rows in the live forms: a walk selection with root, pool_refs [root] and seen_key; outcomes as
+  // described writes them (root and selection_ref from the selection); a gap episode of detector rows of one gap_id.
+  describe("a row made on another root", () => {
+    const sel = (id: string, root: string | undefined) => ({ shape: "selection", id, seq: 300, role: "walk", writer: "walk-test", arm: "arm1",
+      a: "produce/answer/ch1", cell: "produce/answer/ch1|asker:person,age:0", context: ["asker:person", "age:0"], cell_scheme: "reads",
+      ...(root === undefined ? {} : { root }), pool_refs: root === undefined ? [] : [root], seen_key: `k-${id}` })
+    const outcome = (id: string, seq: number, root: string, ask: string) => ({ shape: "outcome", id, seq, role: "described", writer: "described-test",
+      r: 1, why: `graded on ${root}`, input_refs: [ask, `a-${id}`], evidence_refs: [`a-${id}`], context_omitted: 0, root, selection_ref: `so-${id}`,
+      call_id: `c-${id}`, producer: "model" })
+    const gap = (id: string, seq: number, gapId = "failing-test-x") => ({ shape: "gap", id, seq, role: "detector", writer: "pull-sync",
+      gap_id: gapId, status: "open", repo: "super", input_refs: [] })
+    const rows = [
+      sel("sel-w1", "w1"), sel("sel-none", undefined), sel("sel-g3", "g3"),
+      outcome("o-own", 310, "w1", "w1"), outcome("o-far", 320, "w9", "w9"),
+      gap("g2", 380), gap("g3", 400), gap("k1", 390, "failing-test-y"), outcome("o-g2", 395, "g2", "g2"), outcome("o-k1", 396, "k1", "k1"),
+    ]
+    const run = async (selection: string, refs: string[], inputs: unknown[]) => {
+      const keep = { inputs: SCHEMA.inputs, n: INPUTS.length }
+      ;(SCHEMA as any).inputs = inputs
+      ;(SCHEMA as any).reads = [{ type: "record_lapsed", deadline_shape: "due", answer_shape: "answer", asks: { "x-inputs": true } }]
+      INPUTS.push(...(rows as any[]))
+      const before = discovery.seen.length
+      const r = await produce(NODE_KEY, { input_refs: refs, selection_ref: selection })
+      INPUTS.splice(keep.n)
+      ;(SCHEMA as any).inputs = keep.inputs
+      delete (SCHEMA as any).reads
+      const calls = discovery.seen.slice(before)
+      const read = calls.find((c) => (c.body as any)?.pointer?.type === "record_lapsed")?.body as any
+      const prompt = String((calls.find((c) => (c.body as any)?.pointer?.type === "llm_completion")?.body as any)?.pointer?.prompt ?? "")
+      const row = (calls.find((c) => (c.body as any)?.pointer?.type === "record_write")?.body as any)?.pointer?.row
+      return { status: r.status, asks: read?.pointer?.asks as string[] | undefined, prompt, row }
+    }
+    const byShape = ["world_changed", "outcome"]
+    const newest = ["world_changed", { shape: "outcome", latest_by: "shape" }] // as the seed's activity_template takes outcome
+
+    test("[MUST-FAIL] another root's outcome is not an input: not bound by x-inputs, yet still shown and cited", async () => {
+      const r = await run("sel-w1", ["w1", "o-own", "o-far"], byShape)
+      expect(r.status).toBe(200)
+      expect(r.asks).toEqual(["w1", "o-own"])
+      expect(r.prompt).toContain('"o-far"')
+      expect(r.row.input_refs).toContain("o-far")
+      expect(r.row.root).toBe("w1")
+    })
+    test("[MUST-FAIL] another root's newer outcome does not displace the request's own under an input's latest_by", async () => {
+      const r = await run("sel-w1", ["w1", "o-own", "o-far"], newest)
+      expect(r.status).toBe(200)
+      expect(r.asks).toEqual(["w1", "o-own"])
+    })
+    test("[GUARD] a row of the selection's own root is an input as before; with no other root's row, nothing changes", async () => {
+      const r = await run("sel-w1", ["w1", "o-own"], newest)
+      expect(r.asks).toEqual(["w1", "o-own"])
+    })
+    test("[GUARD] a selection naming no root: rows are classed by shape as before", async () => {
+      const r = await run("sel-none", ["w1", "o-own", "o-far"], byShape)
+      expect(r.asks).toEqual(["w1", "o-own", "o-far"])
+    })
+    test("[MUST-FAIL] on a gap, an outcome made under an earlier row of the same gap is an input; one of another gap is not", async () => {
+      const r = await run("sel-g3", ["g2", "g3", "k1", "o-g2", "o-k1"], ["gap", "outcome"])
+      expect(r.status).toBe(200)
+      expect(r.asks).toContain("o-g2")
+      expect(r.asks).not.toContain("o-k1")
+    })
+  })
+
   // A window: a read the owner scopes to "since that shape was last written" (the USER: a retrospective "on this one horizon").
   const sinceRun = async (newest: number | null, down = false) => {
     ;(SCHEMA as any).reads = [{ type: "record_summary", shape: "failure", summarize: ["kind"], after_seq: { "x-since": "retrospective" } }]

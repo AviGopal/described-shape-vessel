@@ -812,6 +812,38 @@ describe("described-shape vessel", () => {
       expect(r.asks).not.toContain("o-fx")
       expect(r.asks).not.toContain("o-gx")
     })
+    test("[GUARD] on a gap whose gap_id is a number, an outcome made under an earlier row of the same gap is an input", async () => {
+      const r = await go({ inputs: ["gap", "outcome"], extra: [{ ...gap("gn2", 380), gap_id: 7 }, { ...gap("gn3", 400), gap_id: 7 }, sel("sel-gn3", "gn3"), outcome("o-gn2", 395, "gn2", "gn2")],
+        selection: "sel-gn3", refs: ["gn2", "gn3", "o-gn2"] })
+      expect(r.status).toBe(200)
+      expect(r.asks).toContain("o-gn2")
+    })
+    // two asks of one shape and role that are not gaps: one with no gap_id, then null, then empty
+    const ask = (id: string, gapId: unknown) => ({ shape: "world_changed", id, seq: 200, role: "person", writer: "hsv", input_refs: [],
+      ...(gapId === "absent" ? {} : { gap_id: gapId }) })
+    for (const none of ["absent", null, ""]) {
+      test(`[MUST-FAIL] two roots that are not gaps (gap_id ${JSON.stringify(none)}): the other ask's input-shaped row is context, not an input`, async () => {
+        const r = await go({ inputs: byShape, extra: [ask("n1", none), ask("n2", none), sel("sel-n1", "n1"), outcome("o-n1", 330, "n1", "n1"), outcome("o-n2", 331, "n2", "n2")],
+          selection: "sel-n1", refs: ["n1", "n2", "o-n1", "o-n2"] })
+        expect(r.status).toBe(200)
+        expect(r.asks).toContain("o-n1")
+        expect(r.asks).not.toContain("o-n2")
+        expect(r.prompt).toContain('"o-n2"')
+      })
+    }
+    test("[MUST-FAIL] another root's input-shaped row under an input entry shown whole is shown whole as context is, not cut short", async () => {
+      const r = await go({ inputs: ["world_changed", { shape: "outcome", whole: true }], extra: [far("o-whole", 20000)] })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("TAIL_o-whole")
+      expect(r.asks).toEqual(["w1", "o-own"])
+    })
+    test("[MUST-FAIL] another root's input-shaped row naming the rows it compared pulls them in first, as a context row does", async () => {
+      const namedHop = { shape: "hop", id: "h-named", seq: 340, output: { text: "NAMED_HOP " + "n".repeat(6000) } }
+      const r = await go({ inputs: byShape, extra: [namedHop, far("o-name", 500, { against_refs: ["h-named"] })], hops: 80 })
+      expect(r.status).toBe(200)
+      expect(r.prompt).toContain("NAMED_HOP")
+      expect(r.row.input_refs).toContain("h-named")
+    })
   })
 
   // A window: a read the owner scopes to "since that shape was last written" (the USER: a retrospective "on this one horizon").

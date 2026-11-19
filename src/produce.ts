@@ -670,7 +670,7 @@ const make = async (p: Ask): Promise<Response> => {
 export const produce = async (req: Request): Promise<Response> => {
   const who = await authenticate(req)
   if (!who.ok) {
-    return fail(401, "")
+    return fail(who.transient === true ? 503 : 401, "")
   }
   if (!who.self) {
     return fail(403, "")

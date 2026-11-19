@@ -3,6 +3,7 @@ import { PORT, VESSEL_ID } from "./config"
 import { beat, register } from "./heartbeat"
 import { fail, produce, records } from "./produce"
 import { HEALTH, SERVE } from "./routes"
+import { onServeError } from "./serve-error"
 import { RECORD_READ, SHAPE_SCHEMA } from "./shapes"
 
 const schemas = await records(RECORD_READ, { shape: SHAPE_SCHEMA })
@@ -26,10 +27,7 @@ Bun.serve({
   idleTimeout: 0,
   routes: { [SERVE]: { POST: produce }, [HEALTH]: { GET: () => Response.json({ vessel: VESSEL_ID }) } },
   fetch: () => fail(404, ""),
-  error: (e) => {
-    console.error(String(e))
-    process.exit(1)
-  },
+  error: onServeError,
 })
 // The targets as the owner's schema rows name them now, or null when they cannot be read.
 const readTargets = async (): Promise<string[] | null> => {

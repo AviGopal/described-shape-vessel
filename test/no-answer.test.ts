@@ -12,9 +12,9 @@ const NODE_KEY = "node-key-for-no-answer-test"
 
 let discovery: Fake
 let reset: ReturnType<typeof Bun.listen>
-// how identity answers each connection: closed on its first bytes, a 200 whose body breaks off, a 429 (too many asks), or a
-// 200 with no data
-let mode: "reset" | "cut" | "busy" | "no-data" = "reset"
+// how identity answers each connection: closed on its first bytes, a 200 whose body breaks off, a 429 (too many asks), a 403
+// (it refuses the key), or a 200 with no data
+let mode: "reset" | "cut" | "busy" | "forbidden" | "no-data" = "reset"
 const NO_DATA = '{"success":true}'
 let port: number
 let vessel: ReturnType<typeof run>
@@ -43,6 +43,7 @@ beforeAll(async () => {
     data: (s) => {
       if (mode === "cut") s.write(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"succ`)
       if (mode === "busy") s.write("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+      if (mode === "forbidden") s.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
       if (mode === "no-data") s.write(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${NO_DATA.length}\r\nConnection: close\r\n\r\n${NO_DATA}`)
       s.end()
     },
@@ -82,6 +83,16 @@ describe("described: identity giving no answer", () => {
     mode = "busy"
     try {
       expect(await call("ApiKey busy-peer-key", { type: "answer", shape: "answer" })).toBe(503)
+    } finally {
+      mode = "reset"
+    }
+    await served()
+  })
+
+  test("a key identity answers 403 for is refused (401), never told to ask again (a guard: so before, too)", async () => {
+    mode = "forbidden"
+    try {
+      expect(await call("ApiKey forbidden-peer-key", { type: "answer", shape: "answer" })).toBe(401)
     } finally {
       mode = "reset"
     }

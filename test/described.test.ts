@@ -1159,6 +1159,27 @@ describe("described-shape vessel", () => {
     expect(r.status).toBe(422)
   })
 
+  test("[MUST-FAIL] an x-quotes rule whose min is not a positive integer refuses the value: it never reads as 1 and checks nothing", async () => {
+    const [inputs, schema, content] = [SCHEMA.inputs, SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).inputs = ["world_changed", "gitDiff"]
+    const diff = { shape: "gitDiff", id: "gd-m", seq: 3, check: { ran: true, passed: false, out: "Expected: \"commit_unavailable\"" } }
+    INPUTS.push(diff)
+    const statusWith = async (rule: Record<string, unknown>) => {
+      ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"],
+        properties: { what_failed: { "x-quotes": { shape: "gitDiff", paths: ["check.out"], ...rule } } } }
+      // a run of two characters the row's output holds, and no longer one
+      llmContent = JSON.stringify({ what_failed: "Ex" })
+      return (await askWith(["w1", "gd-m"])).status
+    }
+    const results = { absent: await statusWith({}), word: await statusWith({ min: "abc" }), zero: await statusWith({ min: 0 }),
+      negative: await statusWith({ min: -1 }), fraction: await statusWith({ min: 1.5 }), one: await statusWith({ min: 1 }) }
+    INPUTS.splice(INPUTS.length - 1, 1)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(results).toEqual({ absent: 422, word: 422, zero: 422, negative: 422, fraction: 422, one: 200 })
+  })
+
   test("[GUARD] a schema without x-quotes is answered as before", async () => {
     const [schema, content] = [SCHEMA.schema, llmContent]
     ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"], properties: { what_failed: { type: "string" } } }

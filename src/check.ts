@@ -127,6 +127,9 @@ export const equalsIn = (schema: unknown, body: unknown, rows: Array<Record<stri
 // those paths. An explanation of a failure then carries the failure's own words (a failing assertion from a check's
 // output), never only a restatement of them, which loses what the next attempt needs. With no shown row holding text at
 // those paths, the value is refused: there is nothing it could quote.
+// Bind it to an input's shape only. The full row is read, as shown for an input; a context row is clipped when large, so a
+// quote from its hidden tail would pass, and a context row the budget leaves out is not shown at all, so every value is
+// refused and the produce stays on offer, asked again with nothing new.
 type QuotesIn = { shape: string; paths: string[]; min: number }
 const quotes = (value: string, text: string, min: number): boolean => {
   for (let i = 0; i + min <= value.length; i++) if (text.includes(value.slice(i, i + min))) return true
@@ -137,8 +140,12 @@ export const quotesIn = (schema: unknown, body: unknown, rows: Array<Record<stri
   const s = schema as { "x-quotes"?: QuotesIn; properties?: Record<string, unknown>; items?: unknown }
   const bad: string[] = []
   const rule = s["x-quotes"]
-  if (rule && body !== null && body !== undefined) {
-    const min = Math.max(1, Number(rule.min) || 1)
+  // A min that is not a positive whole number is the owner's rule written wrong: refused, never read as 1, which would
+  // pass any value sharing one character with the row and so check nothing.
+  if (rule && body !== null && body !== undefined && !(Number.isInteger(rule.min) && rule.min > 0)) {
+    bad.push(`${at || "/"} x-quotes min must be a positive integer, not ${JSON.stringify(rule.min ?? null)}`)
+  } else if (rule && body !== null && body !== undefined) {
+    const min = rule.min
     const texts = rows.filter((r) => String(r.shape) === String(rule.shape))
       .flatMap((r) => [rule.paths].flat().map((p) => at_(r, String(p)))).filter((t): t is string => typeof t === "string")
     if (typeof body !== "string" || !texts.some((t) => quotes(body, t, min))) {

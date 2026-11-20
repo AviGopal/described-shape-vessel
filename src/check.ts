@@ -142,9 +142,10 @@ export const quotesIn = (schema: unknown, body: unknown, rows: Array<Record<stri
   const rule = s["x-quotes"]
   // A min that is not a positive whole number is the owner's rule written wrong: refused, never read as 1, which would
   // pass any value sharing one character with the row and so check nothing.
-  if (rule && body !== null && body !== undefined && !(Number.isInteger(rule.min) && rule.min > 0)) {
+  // Every value under the rule is checked, null too: only a string can quote, so any other value is refused.
+  if (rule && !(Number.isInteger(rule.min) && rule.min > 0)) {
     bad.push(`${at || "/"} x-quotes min must be a positive integer, not ${JSON.stringify(rule.min ?? null)}`)
-  } else if (rule && body !== null && body !== undefined) {
+  } else if (rule) {
     const min = rule.min
     const texts = rows.filter((r) => String(r.shape) === String(rule.shape))
       .flatMap((r) => [rule.paths].flat().map((p) => at_(r, String(p)))).filter((t): t is string => typeof t === "string")

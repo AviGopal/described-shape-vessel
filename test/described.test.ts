@@ -1197,6 +1197,33 @@ describe("described-shape vessel", () => {
     expect(results).toEqual({ array: 422, string: 200 })
   })
 
+  test("[MUST-FAIL] x-quotes is checked on every item of a list, on null, and reads only text at its paths", async () => {
+    const [inputs, schema, content] = [SCHEMA.inputs, SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).inputs = ["world_changed", "gitDiff"]
+    const rule = { "x-quotes": { shape: "gitDiff", paths: ["check.out", "typecheck.out"], min: 20 } }
+    const said = async (ids: string[], what_failed: unknown, sub: Record<string, unknown> = rule) => {
+      ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"], properties: { what_failed: sub } }
+      llmContent = JSON.stringify({ what_failed })
+      return (await askWith(ids)).status
+    }
+    const quoted = 'Expected: "commit_unavailable"'
+    // a row holding text at one path and a number at the other; a row holding only a number
+    INPUTS.push({ shape: "gitDiff", id: "gd-t", seq: 3, check: { ran: true, passed: false, out: 7 }, typecheck: { ran: true, passed: false, out: `error: ${quoted}` } },
+      { shape: "gitDiff", id: "gd-n", seq: 3, check: { ran: true, passed: false, out: 7 }, typecheck: { ran: true, passed: true, out: { lines: [quoted] } } })
+    const results = {
+      itemQuotes: await said(["w1", "gd-t"], [quoted], { type: "array", items: rule }),
+      itemUnquoted: await said(["w1", "gd-t"], [quoted, "a paraphrase of what went wrong, nothing more"], { type: "array", items: rule }),
+      nullValue: await said(["w1", "gd-t"], null),
+      textBesideNumber: await said(["w1", "gd-t"], quoted),
+      onlyNonText: await said(["w1", "gd-n"], quoted),
+    }
+    INPUTS.splice(INPUTS.length - 2, 2)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(results).toEqual({ itemQuotes: 200, itemUnquoted: 422, nullValue: 422, textBesideNumber: 200, onlyNonText: 422 })
+  })
+
   test("[GUARD] a schema without x-quotes is answered as before", async () => {
     const [schema, content] = [SCHEMA.schema, llmContent]
     ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"], properties: { what_failed: { type: "string" } } }

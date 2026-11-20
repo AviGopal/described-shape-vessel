@@ -53,9 +53,25 @@ export const embeddedRows = (rows: unknown[]): Map<string, Record<string, unknow
   for (const r of rows) if ((r as { role?: unknown })?.role === "walk") walk(r, false)
   return out
 }
-const clip = (r: Row, max: number): Row => {
+// A row past its max is shown cut: its start, marked. The cut form is measured as rendered, never by its start's length:
+// the start is JSON, so its quotes and backslashes are escaped again inside the cut, and the cut's own keys are added. A
+// row whose cut form would be no smaller than the row is shown whole. Otherwise the start is the longest that keeps the
+// rendered cut within max, and it never ends inside a surrogate pair.
+export const clip = (r: Row, max: number): Row => {
   const whole = JSON.stringify(r)
-  return whole.length <= max ? r : ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, max) } as Row)
+  if (whole.length <= max) return r
+  const cut = (k: number): Row => ({ id: r.id, shape: r.shape, role: r.role, cut: true, bytes: whole.length, start: whole.slice(0, k) } as Row)
+  const size = (k: number): number => JSON.stringify(cut(k)).length
+  if (size(max) >= whole.length) return r
+  const paired = (k: number): number => /[\uD800-\uDBFF]$/.test(whole.slice(0, k)) ? k - 1 : k
+  let lo = 0
+  let hi = max
+  while (lo < hi) {
+    const k = (lo + hi + 1) >> 1
+    if (size(paired(k)) <= max) lo = k
+    else hi = k - 1
+  }
+  return cut(paired(lo))
 }
 
 export const fail = (status: number, body: string, unserved?: string): Response =>

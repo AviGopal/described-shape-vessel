@@ -1074,6 +1074,36 @@ describe("described-shape vessel", () => {
     expect(r.cited).toContain("h1") // other context still shown
   })
 
+  test("[MUST-FAIL] a whole entry's row past its 96 KiB max is never shown larger cut than whole, and a cut one stays within the max as rendered", async () => {
+    const context = SCHEMA.context
+    ;(SCHEMA as any).context = ["hop", WHOLE]
+    const MAX = 96 * 1024
+    const shownOf = (prompt: string, id: string): Record<string, unknown> | undefined =>
+      (JSON.parse(prompt).inputs as Array<Record<string, unknown>>).find((x) => x.id === id)
+    // a plain row 15 characters past the max: cut, its start's quotes escaped again and the cut's keys added, it is larger
+    const near: Record<string, unknown> = { shape: "fileContent", id: "fc-near", seq: 3, path: "/near.ts", content: "NEAR_TAIL" }
+    near.content = `${"a".repeat(MAX + 15 - JSON.stringify(near).length)}NEAR_TAIL`
+    expect(JSON.stringify(near).length).toBe(MAX + 15)
+    INPUTS.push(near as any)
+    const a = await askWith(["w1", "fc-near"])
+    INPUTS.pop()
+    // a quote-heavy row well past the max: every quote and backslash of its start is escaped again in the cut
+    const quoted = { shape: "fileContent", id: "fc-quoted", seq: 4, path: "/quoted.ts", content: '"\\'.repeat(60_000) }
+    INPUTS.push(quoted as any)
+    const b = await askWith(["w1", "fc-quoted"])
+    INPUTS.pop()
+    ;(SCHEMA as any).context = context
+    expect([a.status, b.status]).toEqual([200, 200])
+    const n = shownOf(a.prompt, "fc-near")
+    expect(n).toEqual(near) // shown whole
+    expect(JSON.stringify(n).length).toBe(MAX + 15)
+    const q = shownOf(b.prompt, "fc-quoted")
+    expect(q?.cut).toBe(true)
+    expect(JSON.stringify(q).length).toBeLessThanOrEqual(MAX)
+    expect(a.cited).toContain("fc-near")
+    expect(b.cited).toContain("fc-quoted")
+  })
+
   test("[MUST-FAIL] an input named as {shape, latest_by} is an input: its newest row is shown whole, the older one not at all", async () => {
     const inputs = SCHEMA.inputs
     ;(SCHEMA as any).inputs = ["world_changed", { shape: "gitDiff", latest_by: "shape" }]

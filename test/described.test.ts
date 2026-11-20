@@ -1180,6 +1180,23 @@ describe("described-shape vessel", () => {
     expect(results).toEqual({ absent: 422, word: 422, zero: 422, negative: 422, fraction: 422, one: 200 })
   })
 
+  test("[MUST-FAIL] an array whose elements, joined, would quote the row is refused by x-quotes: only a string can quote", async () => {
+    const [inputs, schema, content] = [SCHEMA.inputs, SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).inputs = ["world_changed", "gitDiff"]
+    ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"],
+      properties: { what_failed: { "x-quotes": { shape: "gitDiff", paths: ["check.out"], min: 20 } } } }
+    const letters = "abcdefghijklmnopqrstu".split("")
+    INPUTS.push({ shape: "gitDiff", id: "gd-a", seq: 3, check: { ran: true, passed: false, out: `expected one of ${letters.join(",")}` } })
+    const said = async (what_failed: unknown) => { llmContent = JSON.stringify({ what_failed }); return (await askWith(["w1", "gd-a"])).status }
+    // twenty elements: an array's slice of them, read as text, is the row's own comma-joined list
+    const results = { array: await said(letters.slice(0, 20)), string: await said(letters.slice(0, 11).join(",")) }
+    INPUTS.splice(INPUTS.length - 1, 1)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(results).toEqual({ array: 422, string: 200 })
+  })
+
   test("[GUARD] a schema without x-quotes is answered as before", async () => {
     const [schema, content] = [SCHEMA.schema, llmContent]
     ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"], properties: { what_failed: { type: "string" } } }

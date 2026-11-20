@@ -121,6 +121,39 @@ export const equalsIn = (schema: unknown, body: unknown, rows: Array<Record<stri
   return bad
 }
 
+// A schema property may say its value must quote what a row the producer was shown holds:
+// "x-quotes": {"shape": <the shown rows' shape>, "paths": [<dotted paths in those rows>], "min": <chars>}. The value must
+// contain, character for character, a run of at least min characters that one of those rows holds as text at one of
+// those paths. An explanation of a failure then carries the failure's own words (a failing assertion from a check's
+// output), never only a restatement of them, which loses what the next attempt needs. With no shown row holding text at
+// those paths, the value is refused: there is nothing it could quote.
+type QuotesIn = { shape: string; paths: string[]; min: number }
+const quotes = (value: string, text: string, min: number): boolean => {
+  for (let i = 0; i + min <= value.length; i++) if (text.includes(value.slice(i, i + min))) return true
+  return false
+}
+export const quotesIn = (schema: unknown, body: unknown, rows: Array<Record<string, unknown>>, at = ""): string[] => {
+  if (typeof schema !== "object" || schema === null) return []
+  const s = schema as { "x-quotes"?: QuotesIn; properties?: Record<string, unknown>; items?: unknown }
+  const bad: string[] = []
+  const rule = s["x-quotes"]
+  if (rule && body !== null && body !== undefined) {
+    const min = Math.max(1, Number(rule.min) || 1)
+    const texts = rows.filter((r) => String(r.shape) === String(rule.shape))
+      .flatMap((r) => [rule.paths].flat().map((p) => at_(r, String(p)))).filter((t): t is string => typeof t === "string")
+    if (typeof body !== "string" || !texts.some((t) => quotes(body, t, min))) {
+      bad.push(`${at || "/"} quotes no run of ${min} characters from what the ${rule.shape} row shown holds at ${[rule.paths].flat().join(" or ")}${texts.length === 0 ? " (none shown)" : ""}`)
+    }
+  }
+  if (s.properties && typeof body === "object" && body !== null && !Array.isArray(body)) {
+    for (const [k, sub] of Object.entries(s.properties)) {
+      if (k in body) bad.push(...quotesIn(sub, (body as Record<string, unknown>)[k], rows, `${at}/${k}`))
+    }
+  }
+  if (s.items && Array.isArray(body)) body.forEach((v, i) => bad.push(...quotesIn(s.items, v, rows, `${at}/${i}`)))
+  return bad
+}
+
 // Whether a row is one an inputs or context entry names: a shape, or {shape, where} with each where field equal to the
 // row's (a list: any of its values).
 // An entry names a shape, or a relation in its place: {answers_a_call: true} admits the answer of a tool call this

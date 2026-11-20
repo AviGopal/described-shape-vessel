@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { authenticate } from "./auth"
-import { check, equalsIn, inIn, malformedTarget, matches, reachIn, seqsToIds, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf, unseenIn, type SeqResolved } from "./check"
+import { check, equalsIn, inIn, quotesIn, malformedTarget, matches, reachIn, seqsToIds, shapeIn, shownIn, targetRowOf, targetSourceOf, targetsOf, unseenIn, type SeqResolved } from "./check"
 import { DISCOVERY_URL, KEY, VESSEL_ID } from "./config"
 import { AUTH_SCHEME, RESOLVE } from "./routes"
 import { CHANNEL, DESCRIBED, OWNER, RECORD_READ, RECORD_SUMMARY, RECORD_WRITE, REQUIRES, SHAPE_DESCRIPTIONS, SHAPE_SCHEMA } from "./shapes"
@@ -601,6 +601,11 @@ const make = async (p: Ask): Promise<Response> => {
   const unequal = equalsIn(schema.schema, body, seen)
   if (unequal.length > 0) {
     return refused(unequal.join("; ").slice(0, 1000))
+  }
+  // And a value it says must quote a shown row (x-quotes) must hold a run of that row's own words.
+  const unquoted = quotesIn(schema.schema, body, seen)
+  if (unquoted.length > 0) {
+    return refused(unquoted.join("; ").slice(0, 1000))
   }
   // And a value it says must be one of what shown rows hold (x-in) must be one of them, read from the owner's marked
   // reads only: the owner chose that source (and, in the read's where, whose rows count). A row of the shape given as an

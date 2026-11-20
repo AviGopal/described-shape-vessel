@@ -1113,6 +1113,62 @@ describe("described-shape vessel", () => {
     expect(truth.status).toBe(200)
   })
 
+  test("[MUST-FAIL] a value the schema says must quote a shown row (x-quotes) holds a run of that row's own words", async () => {
+    const [inputs, schema, content] = [SCHEMA.inputs, SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).inputs = ["world_changed", "gitDiff", "land_verdict", "hop"]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["what_failed"],
+      // no type: the value's kind is x-quotes' own to refuse
+      properties: { what_failed: { "x-quotes": { shape: "gitDiff", paths: ["check.out", "typecheck.out"], min: 20 } } },
+    }
+    const diff = { shape: "gitDiff", id: "gd-q", seq: 3, check: { ran: true, passed: false, out: "error: expect(received).toBe(expected)\nExpected: \"commit_unavailable\"\nReceived: \"no_super_repo_clone\"" },
+      typecheck: { ran: true, passed: false, out: "src/run.ts(12,3): error TS2322: Type 'number' is not assignable to type 'string'." } }
+    // another shape holding text at the same path is not what the schema names
+    const other = { shape: "hop", id: "hp-q", seq: 5, role: "walk", check: { out: "a hop's own words, long enough to be quoted whole" }, input_refs: ["w1"] }
+    const verdict = { shape: "land_verdict", id: "lv-q", seq: 4, role: "described", r: 0, why: "The gitDiff's check did not pass, indicating the fix is incomplete." }
+    INPUTS.push(diff, verdict, other)
+    const said = async (what_failed: unknown) => { llmContent = JSON.stringify({ what_failed }); return (await askWith(["w1", "gd-q", "lv-q", "hp-q"])).status }
+    const results = {
+      verbatim: await said('the test expects Expected: "commit_unavailable", so the old value must stay'),
+      paraphrase: await said("the test wanted the earlier error name, not the new one"),
+      verdictWhy: await said("The gitDiff's check did not pass, indicating the fix is incomplete."),
+      fromTypecheck: await said("the edit made error TS2322: Type 'number' is not assignable, so the type must change"),
+      exactlyMin: await said('Expected: "commit_un'),
+      // 20 characters, of which only the first 19 run as the row has them
+      oneShort: await said('Expected: "commit_uX'),
+      otherShape: await said("a hop's own words, long enough to be quoted whole"),
+      notAString: await said(42),
+    }
+    INPUTS.splice(INPUTS.length - 3, 3)
+    ;(SCHEMA as any).inputs = inputs
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(results).toEqual({ verbatim: 200, paraphrase: 422, verdictWhy: 422, fromTypecheck: 200, exactlyMin: 200, oneShort: 422, otherShape: 422, notAString: 422 })
+  })
+
+  test("[MUST-FAIL] a value bound by x-quotes with no shown row of that shape is refused: there is nothing it could quote", async () => {
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = {
+      type: "object", required: ["what_failed"],
+      properties: { what_failed: { type: "string", "x-quotes": { shape: "gitDiff", paths: ["check.out"], min: 20 } } },
+    }
+    llmContent = JSON.stringify({ what_failed: "any words at all, long enough to be a quote" })
+    const r = await askWith(["w1"])
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(422)
+  })
+
+  test("[GUARD] a schema without x-quotes is answered as before", async () => {
+    const [schema, content] = [SCHEMA.schema, llmContent]
+    ;(SCHEMA as any).schema = { type: "object", required: ["what_failed"], properties: { what_failed: { type: "string" } } }
+    llmContent = JSON.stringify({ what_failed: "short" })
+    const r = await askWith(["w1"])
+    ;(SCHEMA as any).schema = schema
+    llmContent = content
+    expect(r.status).toBe(200)
+  })
+
   test("[MUST-FAIL] a grade of 1 on a request with targets must cite a read of the target made after the change, never the change's own reply", async () => {
     // b8277fa0's shape: an ask to put the view back to its default; its change_wanted names the target; a read before the
     // change, the change (whose reply says the view is the default), and a read after it. Which call answers with the
